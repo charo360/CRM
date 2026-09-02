@@ -79,7 +79,6 @@ export default function ProductCatalogModal({
     const [saving, setSaving] = useState(false);
     const [activeImageIndex, setActiveImageIndex] = useState(0);
     const [addingPhotos, setAddingPhotos] = useState(false);
-    const [aiFailedBanner, setAiFailedBanner] = useState(false);
     const [suggestingDetails, setSuggestingDetails] = useState(false);
     const [pendingAssets, setPendingAssets] = useState<ImagePicker.ImagePickerAsset[]>([]);
     const [planLimits, setPlanLimits] = useState<{ products: number | null; images: number | null }>({ products: 20, images: 100 });
@@ -228,9 +227,7 @@ export default function ProductCatalogModal({
 
                     if (response.products && response.products.length > 0) {
                         const first = response.products[0];
-                        const aiFailed = !!first.ai_failed;
                         // Open the first uploaded product straight into edit mode
-                        setAiFailedBanner(aiFailed);
                         startEdit({
                             id: first.id,
                             name: first.name,
@@ -521,7 +518,6 @@ export default function ProductCatalogModal({
             if (suggestions.suggested_price !== undefined && suggestions.suggested_price !== null) {
                 setEditPrice(String(suggestions.suggested_price));
             }
-            setAiFailedBanner(false);
             Alert.alert('Suggestions added', 'Review the name, price, category and description before saving.');
         } catch (error: unknown) {
             Alert.alert('AI suggestions unavailable', errorMessage(error, 'Please enter the product details manually.'));
@@ -610,10 +606,10 @@ export default function ProductCatalogModal({
     // ============ PRODUCT DETAIL MODAL ============
 
     const renderDetailModal = () => (
-        <Modal visible={detailVisible} animationType="slide" onRequestClose={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
+        <Modal visible={detailVisible} animationType="slide" onRequestClose={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); }}>
             <SafeAreaView style={styles.container}>
                 <View style={styles.header}>
-                    <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); setAiFailedBanner(false); }}>
+                    <TouchableOpacity onPress={() => { setDetailVisible(false); setEditMode(false); setAddMode(false); }}>
                         <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
                     </TouchableOpacity>
                     <Text style={styles.headerTitle}>{addMode ? 'Add Product' : editMode ? 'Edit Product' : 'Product Details'}</Text>
@@ -631,14 +627,6 @@ export default function ProductCatalogModal({
                         // ---- EDIT / ADD FORM ----
                         <View style={styles.editForm}>
                             {/* Fresh photo uploads are manual by default; AI is optional. */}
-                            {aiFailedBanner && (
-                                <View style={styles.aiBanner}>
-                                    <Ionicons name="information-circle-outline" size={16} color="#92400e" />
-                                    <Text style={styles.aiBannerText}>
-                                        Add your product details yourself, or ask AI for suggestions below.
-                                    </Text>
-                                </View>
-                            )}
                             {!addMode && selectedProduct && (
                                 <TouchableOpacity
                                     style={[styles.aiSuggestBtn, suggestingDetails && { opacity: 0.65 }]}
@@ -1719,22 +1707,6 @@ const styles = StyleSheet.create({
         color: '#8899AA',
         fontSize: 12,
         fontWeight: '600',
-    },
-    aiBanner: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 8,
-        backgroundColor: '#FEF3C7',
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 16,
-    },
-    aiBannerText: {
-        flex: 1,
-        color: '#92400e',
-        fontSize: 13,
-        fontWeight: '500',
-        lineHeight: 18,
     },
     aiSuggestBtn: {
         flexDirection: 'row',
