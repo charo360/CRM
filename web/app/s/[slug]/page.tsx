@@ -253,7 +253,7 @@ export default function PublicStorePage() {
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-7 sm:px-6"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-3xl font-bold">{store.business_name}</h1><p className="mt-2 text-sm text-white/70">Browse, order, and pay securely.</p></div></header>
+      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p></div></header>
 
       <div className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">
@@ -266,7 +266,7 @@ export default function PublicStorePage() {
               className="w-full rounded-full border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
             />
           </div>
-          {categories.length > 2 && <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {categories.length > 2 && <div className="mt-3 flex gap-2 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {categories.map((category) => <button
               key={category}
               type="button"
@@ -281,34 +281,41 @@ export default function PublicStorePage() {
         <section>
           {orderMessage && <div className="mb-5 flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"><Check className="mt-0.5 shrink-0" size={18} />{orderMessage}</div>}
           {store.products.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">This catalog does not have products available right now.</div> : filteredProducts.length === 0 ? <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">No products match your search.</div> : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-4">
+            <div className="columns-2 gap-2 sm:columns-3 sm:gap-3 xl:columns-4">
               {filteredProducts.map((product) => {
                 const image = resolveMediaUrl(product.images?.[0] || product.image_url);
                 const salePrice = displayedPrice(product);
                 const hasDiscount = product.discount_price != null && product.discount_price < product.price;
                 const savePercent = hasDiscount ? Math.round((1 - product.discount_price! / product.price) * 100) : 0;
                 const lowStock = product.in_stock && product.stock_quantity != null && product.stock_quantity > 0 && product.stock_quantity <= 5;
-                return <article key={product.id} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
-                  <div className="relative">
-                    <button type="button" onClick={() => beginAdd(product)} className="block w-full text-left" aria-label={`View ${product.name}`}>
-                      <div className="aspect-square overflow-hidden bg-gradient-to-b from-slate-100 to-slate-50">{image ? <img src={image} alt={product.name} className={`h-full w-full object-cover transition-transform duration-300 group-hover:scale-105 ${!product.in_stock ? "opacity-50 grayscale" : ""}`} /> : <div className="grid h-full place-items-center text-slate-300"><ShoppingBag size={40} /></div>}</div>
-                      {hasDiscount && <span className="absolute left-2 top-2 rounded-full bg-orange-500 px-2 py-0.5 text-[11px] font-bold text-white shadow-sm">-{savePercent}%</span>}
-                      {!product.in_stock && <span className="absolute inset-0 grid place-items-center bg-slate-900/10"><span className="rounded-full bg-slate-900/80 px-3 py-1 text-xs font-semibold text-white">Out of stock</span></span>}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!product.in_stock}
-                      onClick={() => beginAdd(product)}
-                      aria-label={product.in_stock ? `Add ${product.name}` : "Out of stock"}
-                      className="absolute -bottom-3 right-2.5 grid h-9 w-9 place-items-center rounded-full bg-brand-dark text-white shadow-md transition-colors hover:bg-brand disabled:cursor-not-allowed disabled:bg-slate-300"
-                    ><Plus size={18} /></button>
-                  </div>
-                  <div className="p-3 pt-4 sm:p-4 sm:pt-5">
-                    <button type="button" onClick={() => beginAdd(product)} className="line-clamp-2 min-h-10 text-left text-sm font-semibold leading-snug hover:text-brand-dark hover:underline sm:text-base">{product.name}</button>
-                    {product.description && <p className="mt-1 line-clamp-1 text-xs text-slate-500 sm:text-sm">{product.description}</p>}
-                    <div className="mt-2 flex items-baseline gap-1.5"><p className={`text-sm font-bold sm:text-base ${hasDiscount ? "text-orange-600" : "text-brand-dark"}`}>{formatCurrency(salePrice, store.currency)}</p>{hasDiscount && <p className="text-xs text-slate-400 line-through">{formatCurrency(product.price, store.currency)}</p>}</div>
-                    {product.unit && <p className="text-xs text-slate-400">{product.unit}</p>}
-                    {lowStock && <p className="mt-1 text-xs font-semibold text-orange-600">Only {product.stock_quantity} left</p>}
+                // Columns (not grid) so each card is only as tall as its own
+                // photo — a grid row stretches every card to the tallest one,
+                // which is what left the big empty gap under short cards.
+                return <article key={product.id} className="group mb-2 break-inside-avoid overflow-hidden rounded-xl bg-white transition-shadow hover:shadow-md sm:mb-3">
+                  <button type="button" onClick={() => beginAdd(product)} className="relative block w-full text-left" aria-label={`View ${product.name}`}>
+                    {image
+                      ? <img src={image} alt={product.name} className={`w-full max-h-[26rem] object-cover transition-transform duration-300 group-hover:scale-105 ${!product.in_stock ? "opacity-50 grayscale" : ""}`} />
+                      : <div className="grid aspect-square place-items-center bg-slate-100 text-slate-300"><ShoppingBag size={40} /></div>}
+                    {hasDiscount && <span className="absolute left-2 top-2 rounded-full bg-orange-500 px-2 py-0.5 text-[11px] font-bold text-white shadow-sm">-{savePercent}%</span>}
+                    {!product.in_stock && <span className="absolute inset-0 grid place-items-center bg-slate-900/10"><span className="rounded-full bg-slate-900/80 px-3 py-1 text-xs font-semibold text-white">Out of stock</span></span>}
+                  </button>
+                  <div className="px-2 pb-2.5 pt-2">
+                    <button type="button" onClick={() => beginAdd(product)} className="line-clamp-2 text-left text-[13px] font-medium leading-snug text-slate-800 hover:text-brand-dark sm:text-sm">{product.name}</button>
+                    {lowStock && <p className="mt-1 text-[11px] font-semibold text-orange-600">Only {product.stock_quantity} left</p>}
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      <div className="flex min-w-0 items-baseline gap-1">
+                        <p className={`truncate text-base font-bold ${hasDiscount ? "text-orange-600" : "text-brand-dark"}`}>{formatCurrency(salePrice, store.currency)}</p>
+                        {hasDiscount && <p className="shrink-0 text-[11px] text-slate-400 line-through">{formatCurrency(product.price, store.currency)}</p>}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!product.in_stock}
+                        onClick={() => beginAdd(product)}
+                        aria-label={product.in_stock ? `Add ${product.name}` : "Out of stock"}
+                        className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-brand-dark text-white transition-colors hover:bg-brand disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                      ><Plus size={16} /></button>
+                    </div>
+                    {product.unit && <p className="mt-0.5 text-[11px] text-slate-400">{product.unit}</p>}
                   </div>
                 </article>;
               })}
