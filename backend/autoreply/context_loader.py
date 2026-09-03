@@ -365,10 +365,14 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "retail_delivery_fee":       _sanitize(bk.get("retail_delivery_fee", "")),
         "retail_free_delivery_above": _sanitize(bk.get("retail_free_delivery_above", "")),
         "retail_has_custom_orders":  bk.get("retail_has_custom_orders", False),
+        # Anything the merchant has not set stays empty or off. The AI states
+        # these to customers as the business's own policy, so an invented
+        # deposit or check-in time is a promise nobody made — and one that
+        # costs money to walk back.
         "retail_custom_lead_time":   _sanitize(bk.get("retail_custom_lead_time", "")),
         "retail_return_policy":      _sanitize(bk.get("retail_return_policy", "")),
         # Bakery-specific config
-        "bakery_advance_days":       bk.get("bakery_advance_days", 3),
+        "bakery_advance_days":       bk.get("bakery_advance_days", 0),
         "bakery_deposit_required":   bk.get("bakery_deposit_required", False),
         "bakery_deposit_pct":        bk.get("bakery_deposit_pct", 50),
         # Grocery-specific config
@@ -388,7 +392,7 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "salon_cancellation_policy": _sanitize(bk.get("salon_cancellation_policy", "")),
         # Spa-specific config
         "spa_has_couples":           bk.get("spa_has_couples", True),
-        "spa_deposit_required":      bk.get("spa_deposit_required", True),
+        "spa_deposit_required":      bk.get("spa_deposit_required", False),
         "spa_deposit_pct":           bk.get("spa_deposit_pct", 50),
         "spa_cancellation_hours":    bk.get("spa_cancellation_hours", 24),
         # Repair-specific config
@@ -415,6 +419,7 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "fitness_has_trial":         bk.get("fitness_has_trial", True),
         "fitness_class_schedule":    _sanitize(bk.get("fitness_class_schedule", "")),
         # Events-specific config
+        "events_deposit_required":   bk.get("events_deposit_required", False),
         "events_deposit_pct":        bk.get("events_deposit_pct", 50),
         "events_lead_time":          _sanitize(bk.get("events_lead_time", "")),
         "events_delivery_days":      _sanitize(bk.get("events_delivery_days", "")),
@@ -434,10 +439,10 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "support_escalation_policy": _sanitize(bk.get("support_escalation_policy", "")),
         "support_refund_policy":     _sanitize(bk.get("support_refund_policy", "")),
         # Hotel-specific config
-        "hotel_checkin_time":        _sanitize(bk.get("hotel_checkin_time", "2:00 PM")),
-        "hotel_checkout_time":       _sanitize(bk.get("hotel_checkout_time", "11:00 AM")),
+        "hotel_checkin_time":        _sanitize(bk.get("hotel_checkin_time", "")),
+        "hotel_checkout_time":       _sanitize(bk.get("hotel_checkout_time", "")),
         "hotel_min_nights":          bk.get("hotel_min_nights", 0),
-        "hotel_deposit_required":    bk.get("hotel_deposit_required", True),
+        "hotel_deposit_required":    bk.get("hotel_deposit_required", False),
         "hotel_deposit_pct":         bk.get("hotel_deposit_pct", 30),
         "hotel_has_meal_plans":      bk.get("hotel_has_meal_plans", False),
         "hotel_meal_plan_options":   _sanitize(bk.get("hotel_meal_plan_options", "")),
@@ -447,7 +452,7 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
         "hotel_cancellation_policy": _sanitize(bk.get("hotel_cancellation_policy", "")),
         # Rental-specific config
         "rental_type":               _sanitize(bk.get("rental_type", "property")),
-        "rental_deposit_required":   bk.get("rental_deposit_required", True),
+        "rental_deposit_required":   bk.get("rental_deposit_required", False),
         "rental_deposit_pct":        bk.get("rental_deposit_pct", 30),
         "rental_min_nights":         bk.get("rental_min_nights", 0),
         "rental_checkin_time":       _sanitize(bk.get("rental_checkin_time", "")),

@@ -1019,8 +1019,10 @@ def _build_hotel_instructions(bc: dict) -> str:
         "- Before confirming, show a clear summary:",
         f"  '🏨 *Reservation Summary:*",
         f"   🛏️ Room: [room name]",
-        f"   📅 Check-in: [date] at {check_in_time}",
-        f"   📅 Check-out: [date] at {check_out_time}",
+        # Only state a time the hotel actually gave us; an invented one is a
+        # promise to a paying guest that nobody at the hotel made.
+        f"   📅 Check-in: [date]" + (f" at {check_in_time}" if check_in_time else ""),
+        f"   📅 Check-out: [date]" + (f" at {check_out_time}" if check_out_time else ""),
         "   👥 Guests: [N]",
         "   🍽️ Meal Plan: [plan]" if has_meal_plans else "   🍽️ Meals: Not included",
         "   💰 Total: KES [amount]'",
@@ -1662,6 +1664,7 @@ def _build_fitness_instructions(bc: dict) -> str:
 
 def _build_events_instructions(bc: dict) -> str:
     """Build full events/photography autoreply instructions. Covers event planners, photographers, videographers."""
+    deposit_required  = bc.get("events_deposit_required", False)
     deposit_pct       = bc.get("events_deposit_pct", 50)
     has_packages      = bc.get("events_has_packages", True)
     lead_time         = bc.get("events_lead_time", "")            # e.g. "2 weeks minimum"
@@ -1733,8 +1736,10 @@ def _build_events_instructions(bc: dict) -> str:
         "   👥 Guest Count: [N]",
         "   📝 Notes: [specific requirements]",
         "   💰 Total: KES [amount]'",
-        f"- Require {deposit_pct}% deposit to confirm the date.",
-        f"  'To secure your date, a {deposit_pct}% deposit of KES [amount] is required.'",
+        *([
+            f"- Require {deposit_pct}% deposit to confirm the date.",
+            f"  'To secure your date, a {deposit_pct}% deposit of KES [amount] is required.'",
+        ] if deposit_required else []),
         "- Show payment details EXACTLY as configured.",
         "- Ask for payee name + deposit amount.",
         "- Fire create_booking with all event details in notes.",
