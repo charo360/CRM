@@ -258,19 +258,34 @@ export default function SubscriptionModal({
       const customerInfo = await Purchases.restorePurchases();
 
       if (customerInfo.entitlements.active['premium']) {
-        try {
-          const entitlement = customerInfo.entitlements.active['premium'];
-          const productId = entitlement?.productIdentifier || '';
-          const planMatch = productId.match(/crm_(starter|standard|pro)/);
-          if (planMatch) {
-            const platform = require('react-native').Platform.OS === 'ios' ? 'ios' : 'android';
-            await apiClient.post('/subscription/restore-purchases', {
-              purchases: [{ plan_id: planMatch[1], purchase_token: entitlement?.productPlanIdentifier || productId, platform }],
-            });
+        // Access is granted by the server, never by what the app can see.
+        // RevenueCat confirms a subscription to the phone, then tells Zilo over
+        // its signed webhook; until Zilo has heard that, nothing is restored —
+        // saying otherwise leaves someone locked out while being told they are
+        // not.
+        const deadline = Date.now() + 60000;
+        let confirmed = false;
+        while (Date.now() < deadline) {
+          try {
+            const statusResponse = await apiClient.get('/subscription/status');
+            if (statusResponse.data?.subscription_active) {
+              confirmed = true;
+              break;
+            }
+          } catch (statusErr) {
+            console.warn('Could not read subscription status while restoring:', statusErr);
           }
-        } catch (syncErr) {
-          console.warn('Backend restore sync failed (non-fatal):', syncErr);
+          await new Promise(resolve => setTimeout(resolve, 3000));
         }
+
+        if (!confirmed) {
+          Alert.alert(
+            'Still confirming your subscription',
+            'Google Play has your subscription, but Zilo has not received the confirmation yet. This can take a minute — please try again shortly. If it keeps happening, contact support.'
+          );
+          return;
+        }
+
         Alert.alert('Restored!', 'Your subscription has been restored.');
         onSuccess();
         onClose();
