@@ -100,13 +100,33 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
     is_wc_order = False
     wc_line_items = []
     
+    # The catalog is the authority on price, never the model. An AI that
+    # mistypes a figure — or a customer who talks it into one — must not be
+    # able to write that number into a real order. Same rule the public shop
+    # applies to anything a browser sends.
+    catalog_prices: Dict[str, float] = {}
+    wanted_ids = [str(i.get("product_id") or "") for i in raw_items if i.get("product_id")]
+    if wanted_ids:
+        try:
+            async for product in db.products.find({"_id": {"$in": wanted_ids}, "user_id": user_id}):
+                listed = product.get("discount_price")
+                if listed is None:
+                    listed = product.get("price")
+                catalog_prices[str(product["_id"])] = float(listed or 0)
+        except Exception as exc:
+            logger.warning("[autoreply] could not verify prices against the catalog: %s", exc)
+
     for it in raw_items:
         name = (it.get("product_name") or "").strip()
         if not name:
             continue
         pid = str(it.get("product_id", ""))
         qty = max(1, int(it.get("quantity") or 1))
-        unit_price = float(it.get("unit_price") or 0)
+        # A quoted item with no catalog entry is a genuine custom job, so the
+        # agreed figure stands; anything from the catalog is priced by us.
+        unit_price = catalog_prices.get(pid)
+        if unit_price is None:
+            unit_price = float(it.get("unit_price") or 0)
         variant    = (it.get("variant") or "").strip()
         modifiers  = [m for m in (it.get("modifiers") or []) if m.get("choice")]
 
