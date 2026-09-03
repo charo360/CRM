@@ -31,7 +31,9 @@ _ORDER_TYPES = {"retail", "restaurant", "wholesale", "food", "bakery", "grocery"
 # Business types that support service bookings
 _BOOKING_TYPES = {"salon", "beauty", "spa", "services", "rental", "clinic", "healthcare",
                   "gym", "fitness", "photography", "events", "cleaning", "repair",
-                  "general"}  # flexible — may have services in addition to products
+                  "hotel",     # a room is booked for dates, like a rental
+                  "tech",      # callouts and repairs are booked like any service
+                  "general"}   # flexible — may have services in addition to products
 
 # Business types that support both orders AND bookings
 _BOTH_TYPES: set = set()  # restaurant handles dine-in/delivery/takeout entirely via create_order
@@ -75,7 +77,9 @@ async def load_context(db, user_id, customer_id, user: dict, message: str = "") 
     mini_state = await _load_mini_state(db, user_id, customer_id)
     settings = user.get("settings", {}) or {}
     bk_type = (user.get("business_knowledge") or {}).get("business_type", "")
-    business_type = (settings.get("business_type") or user.get("business_type") or bk_type or "retail").lower()
+    # Business Knowledge holds the type the merchant chose; the settings copy is
+    # the sign-up default. Read the chosen one first, as the shop and the app do.
+    business_type = (bk_type or settings.get("business_type") or user.get("business_type") or "retail").lower()
 
     # Load local products
     products = await _load_products(db, user_id)
