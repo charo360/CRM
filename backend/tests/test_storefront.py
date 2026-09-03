@@ -424,6 +424,35 @@ def test_a_trade_gets_its_own_word_for_a_booking(business_type, word):
     assert mode["booking_label"] == word
 
 
+def test_buyers_are_sent_to_the_number_that_is_on_whatsapp():
+    # A business often signs up on one number and runs WhatsApp on another;
+    # the button has to open the one somebody is actually watching.
+    linked = {
+        "phone_number": "+254700000000",
+        "whatsapp": {"instance_name": "zilo_abc", "phone_number": "254733111222"},
+    }
+    assert sf._public_whatsapp(linked) == "254733111222"
+
+
+def test_a_configured_whatsapp_number_beats_the_signup_one():
+    configured = {
+        "phone_number": "+254700000000",
+        "settings": {"whatsapp_phone_number": "+254 733 999 888"},
+        "whatsapp": {"instance_name": "zilo_abc"},
+    }
+    assert sf._public_whatsapp(configured) == "254733999888"
+
+
+def test_the_signup_number_is_only_a_last_resort():
+    only_signup = {"phone_number": "+254700000000", "whatsapp": {"instance_name": "zilo_abc"}}
+    assert sf._public_whatsapp(only_signup) == "254700000000"
+
+
+def test_no_button_at_all_until_whatsapp_is_linked():
+    assert sf._public_whatsapp({"phone_number": "+254700000000"}) is None
+    assert sf._public_whatsapp({"phone_number": "+254700000000", "whatsapp": {}}) is None
+
+
 def test_the_shop_shows_the_hours_the_merchant_wrote():
     hours = "Tue-Sat 9am-6pm, closed Sunday"
     assert sf._opening_hours({"business_knowledge": {"business_hours": hours}}) == hours

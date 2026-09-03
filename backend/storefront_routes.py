@@ -318,9 +318,19 @@ def _public_whatsapp(user_doc: dict) -> Optional[str]:
     is watching is worse than no button. Publishing the number is the point
     for these merchants — it is how their buyers already reach them.
     """
-    if not _text((user_doc.get("whatsapp") or {}).get("instance_name"), 120):
+    whatsapp = user_doc.get("whatsapp") or {}
+    if not _text(whatsapp.get("instance_name"), 120):
         return None
-    digits = re.sub(r"\D", "", _text(user_doc.get("phone_number"), 40))
+
+    # The number people can actually message is the one linked to WhatsApp,
+    # which is often not the number the business signed up with. Reading the
+    # sign-up number sent buyers to a phone nobody watches on WhatsApp.
+    candidate = (
+        whatsapp.get("phone_number")
+        or (user_doc.get("settings") or {}).get("whatsapp_phone_number")
+        or user_doc.get("phone_number")
+    )
+    digits = re.sub(r"\D", "", _text(candidate, 40))
     return digits or None
 
 
