@@ -203,7 +203,7 @@ const TYPE_CONFIGS: Record<string, BusinessConfig> = {
     showDuration: false, showStock: false,
     bookingsTabVisible: true, salesTabLabel: 'Sales',
     dashboardMode: 'hybrid', primaryColor: '#25D366',
-    bookingMode: 'appointment', bookingLabel: 'Reservation',
+    bookingMode: 'appointment', bookingLabel: 'Pre-order',
     staffLabel: '', customerLabel: 'Guest',
     showCheckinCheckout: false,
   },

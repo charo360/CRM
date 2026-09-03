@@ -46,7 +46,10 @@ _BOOKING_LABELS = {
     "salon": "Appointment", "services": "Appointment", "tech": "Appointment",
     "healthcare": "Appointment", "spa": "Appointment", "repair": "Appointment",
     "fitness": "Class",
-    "restaurant": "Reservation", "food": "Reservation", "bakery": "Reservation",
+    "restaurant": "Reservation", "food": "Reservation",
+    # A bakery holds nothing back — a cake is made for a day, not
+    # reserved — so what it takes is a pre-order, not a reservation.
+    "bakery": "Pre-order",
     "hotel": "Reservation",
     "rental": "Booking", "cleaning": "Booking", "events": "Booking",
 }

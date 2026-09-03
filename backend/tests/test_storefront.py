@@ -412,6 +412,9 @@ def test_a_restaurant_keeps_its_cart_and_can_also_hold_a_table():
         ("fitness", "Class"),
         ("hotel", "Reservation"),
         ("restaurant", "Reservation"),
+        ("food", "Reservation"),
+        # A bakery holds nothing back, so what it takes is a pre-order.
+        ("bakery", "Pre-order"),
         ("cleaning", "Booking"),
         ("rental", "Booking"),
         ("retail", "Booking"),
