@@ -25,6 +25,30 @@ export type BusinessType =
   | 'general'
   | '';
 
+/** The types a merchant can choose, shown wherever we ask. */
+export const BUSINESS_TYPE_OPTIONS: { id: BusinessType; label: string; icon: string }[] = [
+  { id: 'retail', label: 'Retail shop', icon: 'storefront-outline' },
+  { id: 'restaurant', label: 'Restaurant', icon: 'restaurant-outline' },
+  { id: 'food', label: 'Food business', icon: 'fast-food-outline' },
+  { id: 'bakery', label: 'Bakery', icon: 'cafe-outline' },
+  { id: 'grocery', label: 'Grocery', icon: 'basket-outline' },
+  { id: 'wholesale', label: 'Wholesale', icon: 'cube-outline' },
+  { id: 'salon', label: 'Salon', icon: 'cut-outline' },
+  { id: 'spa', label: 'Spa', icon: 'flower-outline' },
+  { id: 'fitness', label: 'Fitness', icon: 'barbell-outline' },
+  { id: 'healthcare', label: 'Healthcare', icon: 'medkit-outline' },
+  { id: 'services', label: 'Services', icon: 'briefcase-outline' },
+  { id: 'repair', label: 'Repair', icon: 'construct-outline' },
+  { id: 'cleaning', label: 'Cleaning', icon: 'sparkles-outline' },
+  { id: 'events', label: 'Events', icon: 'balloon-outline' },
+  { id: 'tech', label: 'Tech services', icon: 'laptop-outline' },
+  { id: 'rental', label: 'Rentals', icon: 'key-outline' },
+  { id: 'hotel', label: 'Hotel', icon: 'bed-outline' },
+  { id: 'creator', label: 'Creator', icon: 'videocam-outline' },
+  { id: 'support', label: 'Support', icon: 'headset-outline' },
+  { id: 'general', label: 'Something else', icon: 'ellipsis-horizontal-outline' },
+];
+
 export interface BusinessConfig {
   catalogLabel: string;
   catalogItemLabel: string;

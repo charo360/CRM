@@ -14,12 +14,15 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
-import { storefrontAPI } from '../../context/api';
+import { settingsAPI, storefrontAPI } from '../../context/api';
+import BusinessTypePicker from '../../components/BusinessTypePicker';
+import { BusinessType } from '../../context/BusinessContext';
 
 export default function RegisterScreen() {
   const { phone } = useLocalSearchParams<{ phone: string }>();
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
+  const [businessType, setBusinessType] = useState<BusinessType>('retail');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
   const { register } = useAuth();
@@ -60,6 +63,14 @@ export default function RegisterScreen() {
     try {
       const result = await register(phone!, businessName, ownerName);
       if (result.success) {
+        // The type decides the labels, the tabs and what the public shop does,
+        // so set it before the app first renders rather than leaving every
+        // new business looking like a shop.
+        try {
+          await settingsAPI.updateSettings({ business_type: businessType });
+        } catch {
+          // Not worth blocking sign-up; it can be changed in settings.
+        }
         router.replace('/(tabs)/customers');
       } else {
         Alert.alert('Error', result.message || 'Registration failed');
@@ -111,6 +122,11 @@ export default function RegisterScreen() {
                       : `Another shop already uses zilo.pro/${linkCheck.slug}, so yours would have extra characters. You can still use this name.`}
                 </Text>
               )}
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>What kind of business? *</Text>
+              <BusinessTypePicker value={businessType} onChange={setBusinessType} />
             </View>
 
             <View style={styles.inputGroup}>

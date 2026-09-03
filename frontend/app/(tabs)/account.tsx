@@ -25,6 +25,8 @@ import SubscriptionModal from '../../components/SubscriptionModal';
 import TeamManagementModal from '../../components/TeamManagementModal';
 import PaymentSetupModal from '../../components/PaymentSetupModal';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
+import BusinessTypePicker from '../../components/BusinessTypePicker';
+import { useBusiness, BUSINESS_TYPE_OPTIONS } from '../../context/BusinessContext';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
 interface SubscriptionPlan {
@@ -78,6 +80,7 @@ export default function AccountScreen() {
   const [showPaymentSetup, setShowPaymentSetup] = useState(false);
   const [showProductCatalog, setShowProductCatalog] = useState(false);
   const [showBusinessKnowledge, setShowBusinessKnowledge] = useState(false);
+  const [showBusinessType, setShowBusinessType] = useState(false);
   const [extraCredits, setExtraCredits] = useState(0);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
 
@@ -114,6 +117,7 @@ export default function AccountScreen() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
 
   const { user, logout, refreshUser } = useAuth();
+  const { businessType, refresh: refreshBusiness } = useBusiness();
   const router = useRouter();
 
   useEffect(() => {
@@ -930,6 +934,19 @@ export default function AccountScreen() {
               <Text style={styles.settingText}>Business Knowledge</Text>
               <Ionicons name="chevron-forward" size={20} color="#666" />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => setShowBusinessType(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Change business type"
+            >
+              <Ionicons name="briefcase-outline" size={24} color="#666" />
+              <Text style={styles.settingText}>Business Type</Text>
+              <Text style={{ color: '#8A9BB5', fontSize: 13, marginRight: 8 }}>
+                {BUSINESS_TYPE_OPTIONS.find((o) => o.id === businessType)?.label || 'Not set'}
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color="#666" />
+            </TouchableOpacity>
             <View style={styles.settingItem}>
               <Ionicons name="chatbubble-outline" size={24} color="#666" />
               <View style={{ flex: 1 }}>
@@ -1128,6 +1145,39 @@ export default function AccountScreen() {
         onClose={() => setShowPaymentSetup(false)}
         onConnectionChanged={fetchData}
       />
+      <Modal
+        visible={showBusinessType}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowBusinessType(false)}
+      >
+        <SafeAreaView style={styles.container}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, borderBottomWidth: 1, borderBottomColor: '#1A2942' }}>
+            <Text style={{ fontSize: 18, fontWeight: 'bold', color: '#FFFFFF' }}>Business Type</Text>
+            <TouchableOpacity onPress={() => setShowBusinessType(false)} accessibilityLabel="Close">
+              <Ionicons name="close" size={26} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+          <ScrollView contentContainerStyle={{ padding: 20 }}>
+            <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
+              This sets what your app calls things, whether Bookings appears, and whether your shop link takes orders or bookings.
+            </Text>
+            <BusinessTypePicker
+              value={businessType}
+              onChange={async (type) => {
+                setShowBusinessType(false);
+                try {
+                  await settingsAPI.updateSettings({ business_type: type });
+                  await refreshBusiness();
+                } catch {
+                  Alert.alert('Could not save', 'Please check your connection and try again.');
+                }
+              }}
+            />
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
       <ProductCatalogModal
         visible={showProductCatalog}
         onClose={() => setShowProductCatalog(false)}

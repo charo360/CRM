@@ -3089,6 +3089,12 @@ async def update_settings(request: Request, user = Depends(get_current_user)):
         update_doc.update(top_level_fields)
     if settings_fields:
         update_doc.update(settings_fields)
+    # The business type is read from business_knowledge everywhere that matters
+    # (the shop, the agent, the app's own labels). Keep both copies in step
+    # whichever screen the merchant changed it on — they used to drift, and a
+    # salon ended up with a retail shop and no Bookings tab.
+    if "business_type" in body:
+        update_doc["business_knowledge.business_type"] = body["business_type"]
     if update_doc:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_doc})
     
@@ -12148,6 +12154,10 @@ async def update_business_knowledge(knowledge: BusinessKnowledge, user = Depends
         val = getattr(knowledge, field, None)
         if val is not None:
             update_data[f'business_knowledge.{field}'] = val
+            # Mirror the type back into settings, which the app's own labels
+            # and tab layout still read. See the matching note in PUT /settings.
+            if field == 'business_type':
+                update_data['settings.business_type'] = val
     if update_data:
         await db.users.update_one({"_id": user["_id"]}, {"$set": update_data})
 
