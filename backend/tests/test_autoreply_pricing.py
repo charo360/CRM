@@ -15,8 +15,11 @@ import pytest
 from autoreply.action_handler import _create_order  # noqa: E402
 
 CATALOG = [
-    {"_id": "p1", "user_id": "biz-1", "name": "Latte", "price": 500.0},
-    {"_id": "p2", "user_id": "biz-1", "name": "Beans 1kg", "price": 2400.0, "discount_price": 1900.0},
+    {"_id": "p1", "user_id": "biz-1", "name": "Latte", "price": 500.0,
+     "variants": [{"name": "Large", "price": 700.0}],
+     "modifier_groups": [{"name": "Add-on", "options": [{"name": "Extra shot", "price_delta": 120.0}]}]},
+    {"_id": "p2", "user_id": "biz-1", "name": "Beans 1kg", "price": 2400.0, "discount_price": 1900.0,
+     "pricing_tiers": [{"min_qty": 5, "price": 1500.0}]},
 ]
 
 
@@ -92,3 +95,24 @@ def test_another_business_catalog_cannot_be_used_for_pricing():
     ]}, "someone-else", "cust-1", "KES"))
     # p1 belongs to biz-1, so it is not found and the quoted figure stands.
     assert db.orders.docs[0]["items"][0]["unit_price"] == 9.0
+
+
+def test_a_variant_is_priced_from_the_catalog_not_the_base():
+    # The model quotes the base price for a Large; the catalog knows better.
+    order = _order([{"product_name": "Latte", "product_id": "p1", "quantity": 1,
+                     "variant": "Large", "unit_price": 500}])
+    assert order["items"][0]["unit_price"] == 700.0
+
+
+def test_an_addon_delta_the_model_invented_is_ignored():
+    order = _order([{"product_name": "Latte", "product_id": "p1", "quantity": 1,
+                     "unit_price": 500,
+                     "modifiers": [{"group": "Add-on", "choice": "Extra shot", "price_delta": 5}]}])
+    # 500 base + the catalog's 120 add-on, not the model's 5.
+    assert order["items"][0]["unit_price"] == 620.0
+
+
+def test_a_quantity_tier_is_honoured():
+    order = _order([{"product_name": "Beans 1kg", "product_id": "p2", "quantity": 5, "unit_price": 1900}])
+    assert order["items"][0]["unit_price"] == 1500.0
+    assert order["total_amount"] == 7500.0

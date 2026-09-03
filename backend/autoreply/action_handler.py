@@ -102,19 +102,46 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
     
     # The catalog is the authority on price, never the model. An AI that
     # mistypes a figure — or a customer who talks it into one — must not be
-    # able to write that number into a real order. Same rule the public shop
-    # applies to anything a browser sends.
-    catalog_prices: Dict[str, float] = {}
+    # able to write that number into a real order.
+    #
+    # The public shop already owns this rule, including variants, quantity
+    # tiers and add-on deltas, so borrow it rather than keep a second copy
+    # that can drift out of step with it.
+    catalog: Dict[str, dict] = {}
     wanted_ids = [str(i.get("product_id") or "") for i in raw_items if i.get("product_id")]
     if wanted_ids:
         try:
             async for product in db.products.find({"_id": {"$in": wanted_ids}, "user_id": user_id}):
-                listed = product.get("discount_price")
-                if listed is None:
-                    listed = product.get("price")
-                catalog_prices[str(product["_id"])] = float(listed or 0)
+                catalog[str(product["_id"])] = product
         except Exception as exc:
-            logger.warning("[autoreply] could not verify prices against the catalog: %s", exc)
+            logger.warning("[autoreply] could not read the catalog to check prices: %s", exc)
+
+    def _catalog_unit_price(item: dict) -> float | None:
+        """What the catalog says this line costs each, or None if it cannot say."""
+        product = catalog.get(str(item.get("product_id") or ""))
+        if not product:
+            return None
+        try:
+            from storefront_routes import _price_item
+
+            priced = _price_item(product, {
+                "quantity": max(1, int(item.get("quantity") or 1)),
+                "variant": (item.get("variant") or "").strip(),
+                "modifiers": [
+                    {"group": m.get("group"), "option": m.get("choice")}
+                    for m in (item.get("modifiers") or []) if m.get("choice")
+                ],
+            })
+            return float(priced["unit_price"])
+        except Exception as exc:
+            # A variant the catalog no longer lists, a required choice the
+            # conversation skipped — fall back to the plain listed price
+            # rather than letting the model's figure through.
+            logger.info("[autoreply] falling back to the listed price: %s", exc)
+            listed = product.get("discount_price")
+            if listed is None:
+                listed = product.get("price")
+            return float(listed or 0)
 
     for it in raw_items:
         name = (it.get("product_name") or "").strip()
@@ -124,15 +151,17 @@ async def _create_order(db, action: dict, user_id, customer_id, currency: str) -
         qty = max(1, int(it.get("quantity") or 1))
         # A quoted item with no catalog entry is a genuine custom job, so the
         # agreed figure stands; anything from the catalog is priced by us.
-        unit_price = catalog_prices.get(pid)
-        if unit_price is None:
-            unit_price = float(it.get("unit_price") or 0)
+        priced_by_catalog = _catalog_unit_price(it)
         variant    = (it.get("variant") or "").strip()
         modifiers  = [m for m in (it.get("modifiers") or []) if m.get("choice")]
 
-        # Apply modifier price_deltas on top of unit_price (single calculation)
-        modifier_delta  = sum(float(m.get("price_delta", 0)) for m in modifiers)
-        effective_price = unit_price + modifier_delta
+        if priced_by_catalog is not None:
+            # Already includes the variant, the quantity tier and every add-on.
+            effective_price = priced_by_catalog
+        else:
+            unit_price = float(it.get("unit_price") or 0)
+            modifier_delta = sum(float(m.get("price_delta", 0)) for m in modifiers)
+            effective_price = unit_price + modifier_delta
         line_total      = round(qty * effective_price, 2)
         total          += line_total
 
