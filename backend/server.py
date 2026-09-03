@@ -8603,6 +8603,11 @@ async def revenuecat_subscription_webhook(request: Request):
         if value
     ]
     identities.extend(value for value in (event.get("aliases") or []) if value)
+    # A TRANSFER names the account receiving the subscription separately, and
+    # the one it came from is often gone — deleted, which is why it moved. Look
+    # the recipient up too, or the event is dropped as an unknown user before
+    # anything can act on it.
+    identities.extend(value for value in (event.get("transferred_to") or []) if value)
     user = await db.users.find_one({"_id": {"$in": identities}}) if identities else None
 
     event_transaction_id = str(event.get("transaction_id") or "")
@@ -8761,6 +8766,47 @@ async def revenuecat_subscription_webhook(request: Request):
                 "revenuecat_subscription_purchased_at_ms": event_purchased_at_ms or None,
             }},
         )
+    elif event_type == "TRANSFER":
+        # A subscription moves between accounts whenever someone reinstalls,
+        # changes phone, or deletes and recreates their account: Google Play
+        # still holds it, RevenueCat moves it to whoever is signed in now, and
+        # nothing here used to hear about it. The buyer was then told to
+        # subscribe again while Play refused to sell it twice — a dead end with
+        # no way out.
+        moved_to = [str(v) for v in (event.get("transferred_to") or []) if v]
+        moved_from = [str(v) for v in (event.get("transferred_from") or []) if v]
+
+        if moved_from:
+            # The old account keeps its history but stops being entitled.
+            await db.users.update_many(
+                {"_id": {"$in": moved_from}},
+                {"$set": {"subscription_active": False, "revenuecat_last_event_type": event_type}},
+            )
+
+        recipient = await db.users.find_one({"_id": {"$in": moved_to}}) if moved_to else None
+        if not recipient:
+            logging.warning("RevenueCat TRANSFER has no matching Zilo user: %s", moved_to)
+            return {"status": "ignored", "reason": "no_recipient"}
+        if not plan_id:
+            logging.warning("RevenueCat TRANSFER has an unknown product %r", event.get("product_id"))
+            return {"status": "ignored", "reason": "unknown_product"}
+
+        await db.users.update_one(
+            {"_id": recipient["_id"]},
+            {"$set": {
+                **common,
+                "subscription_plan": plan_id,
+                "subscription_active": True,
+                "subscription_current_period_end": expires_at,
+                "subscription_cancel_at_period_end": False,
+                "subscription_is_trial": is_trial_period,
+                "subscription_trial_ends_at": expires_at if is_trial_period else None,
+                "revenuecat_transaction_id": event_transaction_id or None,
+                "revenuecat_original_transaction_id": event_original_transaction_id or None,
+            }},
+        )
+        logging.info("RevenueCat TRANSFER moved %s to %s", moved_from, recipient["_id"])
+
     elif event_type in {"CANCELLATION", "SUBSCRIPTION_PAUSED", "BILLING_ISSUE"}:
         update_fields = {
             **common,
