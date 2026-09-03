@@ -192,7 +192,7 @@ export default function TabsLayout() {
         <Tabs.Screen
           name="bookings"
           options={{
-            title: config.bookingLabel || 'Bookings',
+            title: pluralBookingLabel(config.bookingLabel),
             href: showBookingsTab ? undefined : null,
             tabBarIcon: ({ color, size }) => (
               <Ionicons name="calendar" size={size} color={color} />
