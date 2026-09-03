@@ -27,6 +27,7 @@ import PaymentSetupModal from '../../components/PaymentSetupModal';
 import ProductCatalogModal from '../../components/ProductCatalogModal';
 import BusinessTypePicker from '../../components/BusinessTypePicker';
 import { useBusiness, BUSINESS_TYPE_OPTIONS } from '../../context/BusinessContext';
+import { accountAPI } from '../../context/api';
 import BusinessKnowledgeModal from '../../components/BusinessKnowledgeModal';
 
 interface SubscriptionPlan {
@@ -465,6 +466,41 @@ export default function AccountScreen() {
       setNotificationsEnabled(!value);
       Alert.alert('Error', 'Failed to update setting');
     }
+  };
+
+  const handleDeleteAccount = () => {
+    // Irreversible and takes the business with it, so ask twice: once for
+    // intent, once with the consequences spelled out.
+    Alert.alert(
+      'Delete account',
+      'This permanently deletes your business, customers, products and orders. It cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Continue',
+          style: 'destructive',
+          onPress: () => Alert.alert(
+            'Delete everything?',
+            `${user?.business_name || 'This business'} and all its data will be erased. Your shop link will stop working.`,
+            [
+              { text: 'Keep my account', style: 'cancel' },
+              {
+                text: 'Delete forever',
+                style: 'destructive',
+                onPress: async () => {
+                  try {
+                    await accountAPI.deleteAccount();
+                    await logout();
+                  } catch {
+                    Alert.alert('Could not delete', 'Please check your connection and try again.');
+                  }
+                },
+              },
+            ],
+          ),
+        },
+      ],
+    );
   };
 
   const handleLogout = () => {
@@ -997,6 +1033,15 @@ export default function AccountScreen() {
         </View>
 
         {/* Logout */}
+        <TouchableOpacity
+          style={styles.deleteAccountButton}
+          onPress={handleDeleteAccount}
+          accessibilityRole="button"
+          accessibilityLabel="Delete account"
+        >
+          <Text style={styles.deleteAccountText}>Delete account</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={24} color="#FF4444" />
           <Text style={styles.logoutText}>Logout</Text>
@@ -1481,6 +1526,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#FFFFFF',
     marginLeft: 12,
+  },
+  deleteAccountButton: {
+    alignItems: 'center',
+    paddingVertical: 14,
+    marginTop: 8,
+  },
+  deleteAccountText: {
+    color: '#8A9BB5',
+    fontSize: 14,
+    textDecorationLine: 'underline',
   },
   logoutButton: {
     flexDirection: 'row',
