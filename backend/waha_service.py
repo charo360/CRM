@@ -316,6 +316,18 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             state = str(data.get("status") or "").upper()
             me = data.get("me") or {}
             number = _jid_to_phone(str(me.get("id") or "")) or None
+            # Only the connection webhook used to record this, so a business
+            # that linked WhatsApp before then never had it stored — and its
+            # shop sent buyers to the sign-up number instead. WAHA tells us
+            # here too, so keep it whenever we ask.
+            if number:
+                try:
+                    await self.db.users.update_one(
+                        {"_id": user_id, "whatsapp.phone_number": {"$ne": number}},
+                        {"$set": {"whatsapp.phone_number": number}},
+                    )
+                except Exception as exc:
+                    logger.warning("[waha.get_instance_status] could not store number: %s", exc)
             return {"connected": state == "WORKING", "status": state.lower() or "unknown", "number": number}
         except Exception as exc:
             logger.warning("[waha.get_instance_status] %s: %s", user_id, exc)
