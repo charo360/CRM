@@ -8593,11 +8593,21 @@ async def revenuecat_subscription_webhook(request: Request):
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid RevenueCat webhook payload")
 
+    event_type = str(event.get("type") or "").upper()
     event_id = str(event.get("id") or "")
-    if event_id and await db.revenuecat_webhook_events.find_one({"_id": event_id}):
+    existing_event = (
+        await db.revenuecat_webhook_events.find_one({"_id": event_id})
+        if event_id else None
+    )
+    # TRANSFER events ignored before a recipient could be resolved have a
+    # ledger row with no processed user. Let RevenueCat (or an operator) replay
+    # those after the handler is fixed. Completed events remain idempotent — in
+    # particular, a consumable with no transaction id must never grant twice.
+    if existing_event and not (
+        event_type == "TRANSFER" and not existing_event.get("processed_user_id")
+    ):
         return {"status": "duplicate"}
 
-    event_type = str(event.get("type") or "").upper()
     identities = [
         value for value in [event.get("app_user_id"), event.get("original_app_user_id")]
         if value
@@ -8628,10 +8638,19 @@ async def revenuecat_subscription_webhook(request: Request):
         "expiration_reason": event.get("expiration_reason") or None,
         "period_type": event.get("period_type") or None,
         "received_at": datetime.utcnow(),
-        "processed_user_id": user.get("_id") if user else None,
     }
     await db.revenuecat_webhook_events.update_one(
-        {"_id": event_record["_id"]}, {"$setOnInsert": event_record}, upsert=True
+        {"_id": event_record["_id"]},
+        {
+            "$setOnInsert": event_record,
+            "$set": {
+                "processed_user_id": (
+                    None if event_type == "TRANSFER" else user.get("_id") if user else None
+                ),
+                "last_received_at": datetime.utcnow(),
+            },
+        },
+        upsert=True,
     )
 
     if not user:
@@ -8776,6 +8795,48 @@ async def revenuecat_subscription_webhook(request: Request):
         moved_to = [str(v) for v in (event.get("transferred_to") or []) if v]
         moved_from = [str(v) for v in (event.get("transferred_from") or []) if v]
 
+        recipient = await db.users.find_one({"_id": {"$in": moved_to}}) if moved_to else None
+        if not recipient:
+            logging.warning("RevenueCat TRANSFER has no matching Zilo user: %s", moved_to)
+            return {"status": "ignored", "reason": "no_recipient"}
+
+        # RevenueCat TRANSFER payloads contain identities only. Recover the
+        # subscription from the last webhook processed for the old account;
+        # that ledger survives account deletion. Fall back to the old user row
+        # for deployments whose ledger predates the fields we need.
+        source_user = await db.users.find_one({"_id": {"$in": moved_from}}) if moved_from else None
+        source_event = await db.revenuecat_webhook_events.find_one(
+            {
+                "processed_user_id": {"$in": moved_from},
+                "event_type": {
+                    "$in": [
+                        "INITIAL_PURCHASE",
+                        "RENEWAL",
+                        "UNCANCELLATION",
+                        "PRODUCT_CHANGE",
+                        "SUBSCRIPTION_EXTENDED",
+                    ]
+                },
+                "product_id": {"$nin": [None, ""]},
+            },
+            sort=[("event_timestamp_ms", -1)],
+        ) if moved_from else None
+
+        from revenuecat_transfer import resolve_transfer_subscription
+
+        transfer_subscription = resolve_transfer_subscription(
+            event,
+            source_event,
+            source_user,
+            set(PLAN_FEATURES),
+        )
+        if not transfer_subscription:
+            logging.warning(
+                "RevenueCat TRANSFER has no active subscription snapshot for %s",
+                moved_from,
+            )
+            return {"status": "ignored", "reason": "missing_subscription_snapshot"}
+
         if moved_from:
             # The old account keeps its history but stops being entitled.
             await db.users.update_many(
@@ -8783,26 +8844,44 @@ async def revenuecat_subscription_webhook(request: Request):
                 {"$set": {"subscription_active": False, "revenuecat_last_event_type": event_type}},
             )
 
-        recipient = await db.users.find_one({"_id": {"$in": moved_to}}) if moved_to else None
-        if not recipient:
-            logging.warning("RevenueCat TRANSFER has no matching Zilo user: %s", moved_to)
-            return {"status": "ignored", "reason": "no_recipient"}
-        if not plan_id:
-            logging.warning("RevenueCat TRANSFER has an unknown product %r", event.get("product_id"))
-            return {"status": "ignored", "reason": "unknown_product"}
+        transfer_expires_at = _revenuecat_datetime(
+            transfer_subscription.get("expiration_at_ms")
+        )
+        transfer_purchased_at = _revenuecat_datetime(
+            transfer_subscription.get("purchased_at_ms")
+        )
 
         await db.users.update_one(
             {"_id": recipient["_id"]},
             {"$set": {
                 **common,
-                "subscription_plan": plan_id,
+                "subscription_plan": transfer_subscription["plan_id"],
                 "subscription_active": True,
-                "subscription_current_period_end": expires_at,
+                "subscription_date": transfer_purchased_at or datetime.utcnow(),
+                "subscription_current_period_end": transfer_expires_at,
                 "subscription_cancel_at_period_end": False,
-                "subscription_is_trial": is_trial_period,
-                "subscription_trial_ends_at": expires_at if is_trial_period else None,
-                "revenuecat_transaction_id": event_transaction_id or None,
-                "revenuecat_original_transaction_id": event_original_transaction_id or None,
+                "subscription_is_trial": transfer_subscription["is_trial"],
+                "subscription_trial_ends_at": (
+                    transfer_expires_at if transfer_subscription["is_trial"] else None
+                ),
+                "revenuecat_transaction_id": transfer_subscription.get("transaction_id"),
+                "revenuecat_original_transaction_id": transfer_subscription.get(
+                    "original_transaction_id"
+                ),
+                "revenuecat_subscription_purchased_at_ms": transfer_subscription.get(
+                    "purchased_at_ms"
+                ),
+                "revenuecat_transfer_source_event_id": transfer_subscription.get(
+                    "source_event_id"
+                ),
+            }},
+        )
+        await db.revenuecat_webhook_events.update_one(
+            {"_id": event_record["_id"]},
+            {"$set": {
+                "processed_user_id": recipient["_id"],
+                "processing_status": "ok",
+                "processed_at": datetime.utcnow(),
             }},
         )
         logging.info("RevenueCat TRANSFER moved %s to %s", moved_from, recipient["_id"])
