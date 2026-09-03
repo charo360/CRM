@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import random
@@ -32,6 +33,41 @@ WAHA_NODE_URLS = tuple(
 WAHA_API_KEY = os.environ.get("WAHA_API_KEY", "")
 WAHA_WEBHOOK_SECRET = os.environ.get("WAHA_WEBHOOK_SECRET", "")
 WAHA_VERIFY_SSL = os.environ.get("WAHA_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+
+
+def _region_proxies(raw: str) -> dict[str, dict[str, str]]:
+    """Parse the optional, per-country WAHA egress configuration safely.
+
+    ``WAHA_REGION_PROXIES_JSON`` deliberately lives only in the deployment
+    environment because it can contain proxy credentials. Each entry has a
+    stable proxy ``server`` and optional ``username`` and ``password``. Bad
+    entries are ignored rather than allowing a malformed environment variable
+    to interrupt WhatsApp linking globally.
+    """
+    try:
+        configured = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        logger.warning("[waha] WAHA_REGION_PROXIES_JSON is not valid JSON")
+        return {}
+    if not isinstance(configured, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for country, value in configured.items():
+        if not isinstance(country, str) or not isinstance(value, dict):
+            continue
+        server = str(value.get("server") or "").strip()
+        if not server:
+            continue
+        proxy = {"server": server}
+        for field in ("username", "password"):
+            item = value.get(field)
+            if isinstance(item, str) and item:
+                proxy[field] = item
+        result[country.strip().upper()] = proxy
+    return result
+
+
+WAHA_REGION_PROXIES = _region_proxies(os.environ.get("WAHA_REGION_PROXIES_JSON", ""))
 
 
 def waha_config_error() -> Optional[str]:
@@ -118,6 +154,34 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             }],
         }
 
+    async def _session_config_for_user(self, user_id: str) -> tuple[dict, Optional[str]]:
+        """Return the webhook config plus a sticky country-specific egress.
+
+        WhatsApp evaluates a newly linked device from the network it sees. A
+        business must therefore retain the same country egress for the life of
+        its WAHA session; silently changing it later would be less trustworthy
+        than leaving its working connection alone.
+        """
+        user = await self.db.users.find_one(
+            {"_id": user_id},
+            {"country_code": 1, "settings.country_code": 1, "whatsapp.waha_egress_region": 1},
+        ) or {}
+        whatsapp = user.get("whatsapp") or {}
+        settings = user.get("settings") or {}
+        region = str(
+            whatsapp.get("waha_egress_region")
+            or user.get("country_code")
+            or settings.get("country_code")
+            or ""
+        ).strip().upper()
+        proxy = WAHA_REGION_PROXIES.get(region)
+        config = self._webhook_config()
+        if proxy:
+            config["proxy"] = proxy
+            config["metadata"]["egress_region"] = region
+            return config, region
+        return config, None
+
     async def _node_for_user(self, user_id: str) -> tuple[int, str]:
         """Keep every business on one node across calls and deployments."""
         if not self.node_urls:
@@ -131,9 +195,9 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         index = int(hashlib.sha256(str(user_id).encode("utf-8")).hexdigest(), 16) % len(self.node_urls)
         return index, self.node_urls[index]
 
-    async def _start_session(self, base_url: str, instance_name: str) -> dict:
+    async def _start_session(self, base_url: str, instance_name: str, config: dict) -> dict:
         """Create/update/start a session without deleting an existing auth state."""
-        payload = {"name": instance_name, "config": self._webhook_config()}
+        payload = {"name": instance_name, "config": config}
         async with httpx.AsyncClient(timeout=30, verify=self.verify_ssl) as client:
             response = await client.post(
                 f"{base_url}/api/sessions/start", headers=self._headers(), json=payload
@@ -197,28 +261,32 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         instance_name = self._instance_name(user_id)
         try:
             node, base_url = await self._node_for_user(user_id)
+            session_config, egress_region = await self._session_config_for_user(user_id)
             # A previous aborted attempt leaves WAHA in FAILED.  Remove only
             # that failed session before creating a new pairing attempt.
             recovered_failed_session = await self._clear_failed_session(base_url, instance_name)
             try:
-                session = await self._start_session(base_url, instance_name)
+                session = await self._start_session(base_url, instance_name, session_config)
             except RuntimeError:
                 # WAHA can transition to FAILED between the pre-check and the
                 # start call.  Recover once, then surface any real failure.
                 if not recovered_failed_session and await self._clear_failed_session(base_url, instance_name):
-                    session = await self._start_session(base_url, instance_name)
+                    session = await self._start_session(base_url, instance_name, session_config)
                 else:
                     raise
+            update = {
+                "whatsapp.provider": self.provider,
+                "whatsapp.waha_node": node,
+                "whatsapp.instance_name": instance_name,
+                "whatsapp.status": "pairing_pending",
+                "whatsapp.connected": False,
+                "whatsapp.created_at": datetime.utcnow(),
+            }
+            if egress_region:
+                update["whatsapp.waha_egress_region"] = egress_region
             await self.db.users.update_one(
                 {"_id": user_id},
-                {"$set": {
-                    "whatsapp.provider": self.provider,
-                    "whatsapp.waha_node": node,
-                    "whatsapp.instance_name": instance_name,
-                    "whatsapp.status": "pairing_pending",
-                    "whatsapp.connected": False,
-                    "whatsapp.created_at": datetime.utcnow(),
-                }},
+                {"$set": update},
             )
             result = await self._request_pairing_code(base_url, instance_name, phone)
             if result.get("pairing_code"):
@@ -258,17 +326,21 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         instance_name = self._instance_name(user_id)
         try:
             node, base_url = await self._node_for_user(user_id)
-            await self._start_session(base_url, instance_name)
+            session_config, egress_region = await self._session_config_for_user(user_id)
+            await self._start_session(base_url, instance_name, session_config)
+            update = {
+                "whatsapp.provider": self.provider,
+                "whatsapp.waha_node": node,
+                "whatsapp.instance_name": instance_name,
+                "whatsapp.status": "qr_pending",
+                "whatsapp.connected": False,
+                "whatsapp.created_at": datetime.utcnow(),
+            }
+            if egress_region:
+                update["whatsapp.waha_egress_region"] = egress_region
             await self.db.users.update_one(
                 {"_id": user_id},
-                {"$set": {
-                    "whatsapp.provider": self.provider,
-                    "whatsapp.waha_node": node,
-                    "whatsapp.instance_name": instance_name,
-                    "whatsapp.status": "qr_pending",
-                    "whatsapp.connected": False,
-                    "whatsapp.created_at": datetime.utcnow(),
-                }},
+                {"$set": update},
             )
             return await self.get_qr_code(user_id)
         except Exception as exc:

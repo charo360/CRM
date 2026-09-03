@@ -43,6 +43,26 @@ WAHA_WEBHOOK_SECRET=<a separate long random secret shared with Zilo only>
 WEBHOOK_BASE_URL=https://<your-zilo-api-domain>
 ```
 
+## Regional WhatsApp egress
+
+WAHA can attach a fixed proxy to each session when it is first linked. Zilo
+selects the proxy from the business's `country_code`, persists that region on
+the WhatsApp record, and keeps it for later reconnects. This is intended for a
+stable, dedicated exit in the business's own country; do not use a rotating
+proxy.
+
+Configure the endpoints only in the deployed backend's environment:
+
+```text
+WAHA_REGION_PROXIES_JSON={"KE":{"server":"ke.example.net:3128","username":"...","password":"..."},"US":{"server":"us.example.net:3128","username":"...","password":"..."}}
+```
+
+The proxy is sent to WAHA only while Zilo starts a new pairing session. Existing
+linked businesses are left untouched. To test the US route, unlink the test
+account from Zilo and WhatsApp, then link it again after the US endpoint is in
+place. Confirm the location shown by WhatsApp before using the same setup for
+Kenyan businesses.
+
 `WAHA_WEBHOOK_SECRET` is sent as a SHA-512 HMAC with every WAHA event and is
 verified by Zilo before it processes a message or connection change. Do not use
 the WAHA API key as the webhook secret.
