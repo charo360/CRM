@@ -10462,6 +10462,12 @@ async def evolution_webhook(request: Request):
 
             if not parsed:
                 log_trace("Parsed is empty/None")
+                logging.info(
+                    "Webhook dropped before auto-reply: parser returned nothing "
+                    f"(event={event!r}, instance={instance_name!r}, "
+                    f"chat={str(data.get('chatId') or data.get('from') or '')[:32]!r}, "
+                    f"from_me={data.get('fromMe')})"
+                )
                 return {"status": "ok"}
             
             # === DEDUPLICATION GUARD ===
@@ -10797,6 +10803,10 @@ async def evolution_webhook(request: Request):
 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
+                    logging.info(
+                        f"Auto-reply skipped for {from_number}: this message was sent by "
+                        "the connected WhatsApp account (from_me)"
+                    )
                     # Mark all unread incoming messages from this customer as read
                     await db.messages.update_many(
                         {"user_id": user["_id"], "customer_id": customer_id, "direction": "incoming", "read": {"$ne": True}},
