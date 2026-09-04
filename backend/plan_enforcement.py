@@ -111,16 +111,23 @@ async def enforce_message_limit(db, user_id: str, additional_messages: int = 1) 
     """
     Verify if the user can send more messages. Raises HTTPException 403 if limit is exceeded.
     """
-    limits = await get_active_plan_limits(db, user_id)
-    current = await get_monthly_message_count(db, user_id)
-    allowed = limits["messages"]
+    from entitlements import build_entitlements
 
-    if current + additional_messages > allowed:
+    user = await db.users.find_one({"_id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Business account not found.")
+    ent = await build_entitlements(db, user)
+    if not ent.get("dashboard_access"):
+        raise HTTPException(status_code=402, detail="Choose a plan or start a free trial to send messages.")
+
+    usage = ent.get("usage") or {}
+    remaining = int(usage.get("outbound_messages_remaining") or 0)
+    if additional_messages > remaining:
         raise HTTPException(
             status_code=403,
             detail=(
-                f"Plan limit reached. You have sent {current} of {allowed} monthly messages "
-                f"on your {limits['plan_name']} plan. Please upgrade your subscription to send more messages."
+                "Your included monthly messages and extra messages are used. "
+                "Buy more messages or upgrade your subscription to continue."
             )
         )
 

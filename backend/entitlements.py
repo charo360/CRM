@@ -135,9 +135,21 @@ async def count_monthly_outbound(db, business_id: str, now: Optional[datetime] =
         {
             "user_id": business_id,
             "direction": "outgoing",
+            # A provider-rejected send must not consume a plan message or a
+            # purchased extra message. Older accepted messages do not have a
+            # delivery_status field, so $ne keeps those counted.
+            "delivery_status": {"$ne": "failed"},
             "created_at": {"$gte": month_start},
         }
     )
+
+
+def extra_message_balance(record: dict) -> int:
+    """Return the non-expiring purchased-message balance safely."""
+    try:
+        return max(0, int(record.get("extra_credits") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 async def load_billing_record(db, user: dict) -> dict:
@@ -176,6 +188,8 @@ async def build_entitlements(db, user: dict) -> Dict[str, Any]:
         trial_active=trial_entitled,
     )
     dashboard = has_dashboard_access(record, now)
+    extra_messages = extra_message_balance(record)
+    included_remaining = max(0, cap - usage) if cap else 0
 
     return {
         "owner_id": business_id,
@@ -195,8 +209,13 @@ async def build_entitlements(db, user: dict) -> Dict[str, Any]:
         "billing_provider": record.get("billing_provider") or ("stripe" if record.get("stripe_customer_id") else None),
         "usage": {
             "outbound_messages_month": usage,
+            # This is the allowance included in the subscription, rather than
+            # a rolling total that would make a purchased message disappear
+            # twice when it is sent.
             "outbound_messages_cap": cap,
-            "outbound_messages_remaining": max(0, cap - usage) if cap else 0,
+            "included_messages_remaining": included_remaining,
+            "extra_messages_available": extra_messages,
+            "outbound_messages_remaining": included_remaining + extra_messages,
             "trial_credits": TRIAL_CREDITS if trial_entitled else 0,
         },
         "trial_credits": TRIAL_CREDITS if trial_entitled else 0,
@@ -241,13 +260,48 @@ def assert_outbound_allowed(ent: Dict[str, Any]) -> None:
         raise HTTPException(status_code=402, detail="Choose a plan or start your free trial to continue.")
     usage = ent.get("usage") or {}
     cap = usage.get("outbound_messages_cap") or 0
-    if cap <= 0:
+    if cap <= 0 and not usage.get("extra_messages_available"):
         raise HTTPException(status_code=402, detail="Subscribe or start a free trial to send messages.")
-    if usage.get("outbound_messages_month", 0) >= cap:
+    if usage.get("outbound_messages_remaining", 0) <= 0:
         raise HTTPException(
             status_code=429,
-            detail=f"Monthly message limit reached ({cap:,}). Upgrade your plan for more capacity.",
+            detail="Your included monthly messages and extra messages are used. Buy more messages or upgrade your plan.",
         )
+
+
+async def consume_extra_message_if_needed(db, user_id: str, message_id: str) -> bool:
+    """Consume one purchased message only for a successful overage send.
+
+    The normal monthly allowance resets at the start of every month. Purchased
+    extra messages do not, so they are decremented only after a message beyond
+    that included allowance has actually been accepted by the provider.
+    """
+    message = await db.messages.find_one({"_id": message_id}, {"extra_message_consumed": 1})
+    if not message or message.get("extra_message_consumed"):
+        return False
+
+    user = await db.users.find_one({"_id": user_id}) or {"_id": user_id}
+    record = await load_billing_record(db, user)
+    ent = await build_entitlements(db, record)
+    usage = ent.get("usage") or {}
+    included_cap = int(usage.get("outbound_messages_cap") or 0)
+    monthly_sent = int(usage.get("outbound_messages_month") or 0)
+    if monthly_sent <= included_cap:
+        return False
+
+    owner_id = ent["owner_id"]
+    result = await db.users.update_one(
+        {"_id": owner_id, "extra_credits": {"$gte": 1}},
+        {"$inc": {"extra_credits": -1}},
+    )
+    if not result.modified_count:
+        return False
+
+    await db.messages.update_one(
+        {"_id": message_id},
+        {"$set": {"extra_message_consumed": True, "extra_message_consumed_at": datetime.utcnow()}},
+    )
+    return True
 
 
 def trial_end_from_start(started: datetime) -> datetime:

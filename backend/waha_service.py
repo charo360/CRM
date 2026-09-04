@@ -548,6 +548,13 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             if provider_message_id:
                 updates["evo_message_id"] = provider_message_id  # legacy field name retained for existing DB queries
             await self.db.messages.update_one({"_id": message_id}, {"$set": updates})
+            # Purchased messages are used only once the provider accepts this
+            # overage message. Failed sends do not reduce the balance.
+            try:
+                from entitlements import consume_extra_message_if_needed
+                await consume_extra_message_if_needed(self.db, user_id, message_id)
+            except Exception:
+                logger.exception("[waha] could not record extra-message usage for %s", message_id)
             return {
                 "status": "success", "delivered": True, "customer_id": customer_id,
                 "message_id": message_id, "evo_message_id": provider_message_id,

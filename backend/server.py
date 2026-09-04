@@ -8969,11 +8969,14 @@ async def get_subscription_status(user = Depends(get_current_user)):
     if billing_owner:
         await _repair_revenuecat_expiration_race(billing_owner)
     ent = await build_entitlements(db, user)
+    billing_record = billing_owner or user
     return {
-        "subscription_plan": user.get("subscription_plan"),
-        "subscription_active": user.get("subscription_active", False),
-        "subscription_date": user.get("subscription_date"),
-        "extra_credits": user.get("extra_credits", 0),
+        # Billing belongs to the business owner, including a purchased
+        # message balance. Team members must see the same truthful balance.
+        "subscription_plan": billing_record.get("subscription_plan"),
+        "subscription_active": billing_record.get("subscription_active", False),
+        "subscription_date": billing_record.get("subscription_date"),
+        "extra_credits": billing_record.get("extra_credits", 0),
         **ent,
     }
 

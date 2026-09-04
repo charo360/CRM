@@ -868,13 +868,13 @@ export default function AccountScreen() {
 
         {/* Credits Card */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>AI Credits</Text>
+          <Text style={styles.sectionTitle}>Extra Messages</Text>
           <View style={styles.creditsCard}>
             <View style={styles.creditsLeft}>
               <Ionicons name="flash" size={28} color="#F59E0B" />
               <View style={{ marginLeft: 12 }}>
                 <Text style={styles.creditsValue}>{extraCredits.toLocaleString()}</Text>
-                <Text style={styles.creditsLabel}>Extra credits available</Text>
+                <Text style={styles.creditsLabel}>Extra WhatsApp messages available</Text>
               </View>
             </View>
             <TouchableOpacity

@@ -672,6 +672,15 @@ class WhatsAppService:
                     })
                 except Exception:
                     pass
+            elif evo_msg_id:
+                # Keep one-time purchased messages from being charged before a
+                # provider has accepted the send. The WAHA implementation uses
+                # the same helper after its successful response.
+                try:
+                    from entitlements import consume_extra_message_if_needed
+                    await consume_extra_message_if_needed(self.db, user_id, message_id)
+                except Exception:
+                    logger.exception("[send_message] could not record extra-message usage for %s", message_id)
 
             return {
                 # Do not report a failed provider call as a successful send.

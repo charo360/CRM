@@ -103,12 +103,22 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
         // balance only affects the number shown in the success message.
       }
 
-      // Fetch all available products (consumables)
-      const offerings = await Purchases.getOfferings();
-      const allPackages = [
-        ...(offerings.current?.availablePackages || []),
-        ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
-      ];
+      // Offerings are intended for subscription packages. A consumable top-up
+      // is valid in Google Play even when it is not attached to an Offering,
+      // so we look there first for backwards compatibility and then fetch the
+      // exact non-subscription product directly from RevenueCat.
+      let allPackages: any[] = [];
+      try {
+        const offerings = await Purchases.getOfferings();
+        allPackages = [
+          ...(offerings.current?.availablePackages || []),
+          ...Object.values(offerings.all || {}).flatMap((o: any) => o.availablePackages || []),
+        ];
+      } catch (offeringError) {
+        // Do not make an Offering outage hide a configured consumable.
+        // getProducts below asks Google Play for this exact item instead.
+        console.warn('Could not load RevenueCat offerings for a top-up:', offeringError);
+      }
 
       // Match by exact bundle_id (which IS the Google Play product ID: charo360_credits_*)
       const pkg = allPackages.find(
@@ -118,10 +128,19 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
           p.identifier === bundle.bundle_id
       );
 
+      let storeProduct: any = null;
       if (!pkg) {
+        const products = await Purchases.getProducts(
+          [bundle.bundle_id],
+          Purchases.PRODUCT_CATEGORY.NON_SUBSCRIPTION,
+        );
+        storeProduct = products.find((product: any) => product.identifier === bundle.bundle_id);
+      }
+
+      if (!pkg && !storeProduct) {
         Alert.alert(
           'Credit bundle unavailable',
-          `"${bundle.label}" is not yet available from Google Play for this app account. Please try another bundle or contact Zilo support.`,
+          `"${bundle.label}" is not available for the Google Play version installed on this phone yet. Please update Zilo from Google Play and try again.`,
           [{ text: 'OK' }]
         );
         return;
@@ -130,8 +149,11 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
       // RevenueCat sends the verified NON_RENEWING_PURCHASE event to Zilo.
       // We deliberately do not grant credits from a client-provided purchase
       // token: a retry could otherwise add the same consumable twice.
-      await Purchases.purchasePackage(pkg);
-      await Purchases.syncPurchases().catch(() => undefined);
+      if (pkg) {
+        await Purchases.purchasePackage(pkg);
+      } else {
+        await Purchases.purchaseStoreProduct(storeProduct);
+      }
 
       const deadline = Date.now() + 60000;
       let confirmedBalance: number | null = null;
@@ -153,8 +175,8 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
       if (confirmedBalance !== null) {
         const creditsAdded = confirmedBalance - balanceBefore;
         Alert.alert(
-          'Credits added',
-          `${creditsAdded.toLocaleString()} extra credits were added.\n\nNew balance: ${confirmedBalance.toLocaleString()} credits`,
+          'Extra messages added',
+          `${creditsAdded.toLocaleString()} extra messages were added.\n\nNew balance: ${confirmedBalance.toLocaleString()} messages`,
           [{ text: 'Great!' }]
         );
         onSuccess(creditsAdded);
@@ -162,7 +184,7 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
       } else {
         Alert.alert(
           'Payment received',
-          'Google Play accepted your payment. Zilo is confirming it securely and your credits will appear shortly. Please reopen Account in a minute before trying again.',
+          'Google Play accepted your payment. Zilo is confirming it securely and your extra messages will appear shortly. Please reopen Account in a minute before trying again.',
           [{ text: 'OK', onPress: onClose }]
         );
       }
@@ -183,8 +205,8 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
           {/* Header */}
           <View style={styles.header}>
             <View>
-              <Text style={styles.title}>Buy Extra Credits</Text>
-              <Text style={styles.subtitle}>Current balance: {currentCredits.toLocaleString()} credits</Text>
+              <Text style={styles.title}>Buy Extra Messages</Text>
+              <Text style={styles.subtitle}>Current balance: {currentCredits.toLocaleString()} messages</Text>
             </View>
             <TouchableOpacity onPress={onClose} disabled={!!purchasing}>
               <Ionicons name="close" size={28} color="#fff" />
@@ -195,7 +217,7 @@ export default function CreditBundleModal({ visible, onClose, onSuccess, current
           <View style={styles.infoBanner}>
             <Ionicons name="information-circle-outline" size={18} color="#8A9BB5" />
             <Text style={styles.infoText}>
-              Credits are used for AI features like smart replies, summaries, and automations.
+              Extra messages are used after your included monthly WhatsApp message allowance. They never expire.
             </Text>
           </View>
 
