@@ -10531,7 +10531,10 @@ async def evolution_webhook(request: Request):
                 customer_name = customer.get("name", customer_name)
                 remote_jid_val = parsed.get("remote_jid", "")
                 lid_update = {}
-                if remote_jid_val and "@lid" in remote_jid_val and not customer.get("lid_jid"):
+                # LIDs are WhatsApp's current, opaque identities. Keep the
+                # latest one so replies use the exact chat that sent us the
+                # message instead of an unreliable phone-number conversion.
+                if remote_jid_val and "@lid" in remote_jid_val and remote_jid_val != customer.get("lid_jid"):
                     lid_update["lid_jid"] = remote_jid_val
                 # Auto-update fallback names when WhatsApp push_name is available
                 existing_name = customer.get("name", "")
@@ -10571,6 +10574,7 @@ async def evolution_webhook(request: Request):
                     "auto_created": True,
                     "is_customer": False,
                     "customer_initiated": not from_me,
+                    **({"lid_jid": parsed["remote_jid"]} if "@lid" in parsed.get("remote_jid", "") else {}),
                 })
                 logging.info(f"Auto-created contact from WhatsApp: {customer_name} ({from_number})")
                 

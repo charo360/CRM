@@ -93,6 +93,18 @@ def _chat_id(phone: str) -> str:
     return f"{number}@c.us"
 
 
+def _is_lid_jid(value: object) -> bool:
+    """Return whether a value is WhatsApp's opaque linked-identity JID.
+
+    WAHA/NOWEB can receive a chat as ``<lid>@lid``.  A LID is not a phone
+    number, so converting it to ``@c.us`` makes WAHA accept a send request
+    without necessarily being able to deliver it.  Only accept the exact
+    suffix we receive from WhatsApp; all other values use the normal phone
+    fallback.
+    """
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9]+@lid", value))
+
+
 def _message_type(media: Optional[dict]) -> str:
     if not media:
         return "text"
@@ -460,13 +472,31 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 "created_at": datetime.utcnow(), "auto_created": False, "business_initiated": True,
             })
 
+        # Prefer WhatsApp's current LID for a known inbound contact.  NOWEB
+        # reports LID chats on modern WhatsApp accounts; translating them to a
+        # phone JID is accepted by the API but can silently fail delivery.
+        chat_id = customer.get("lid_jid") if customer else None
+        if not _is_lid_jid(chat_id):
+            latest_inbound = await self.db.messages.find_one(
+                {
+                    "user_id": user_id,
+                    "customer_id": customer_id,
+                    "direction": "incoming",
+                    "remote_jid": {"$regex": r"@lid$"},
+                },
+                sort=[("created_at", -1)],
+            )
+            chat_id = (latest_inbound or {}).get("remote_jid")
+        if not _is_lid_jid(chat_id):
+            chat_id = _chat_id(to_number)
+
         message_id = str(uuid.uuid4())
         is_image = _looks_like_image(media_url, media_type)
         doc = {
             "_id": message_id, "customer_id": customer_id, "user_id": user_id,
             "direction": "outgoing", "content": message,
             "message_type": "image" if media_url and is_image else ("document" if media_url else "text"),
-            "from_number": to_number, "remote_jid": _chat_id(to_number),
+            "from_number": to_number, "remote_jid": chat_id,
             "created_at": datetime.utcnow(), "send_context": send_context,
             "delivery_status": "pending",
         }
@@ -486,12 +516,12 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             path = "/api/sendImage" if is_image else "/api/sendFile"
             mimetype = _image_mimetype(media_url) if is_image else "application/octet-stream"
             payload = {
-                "session": session, "chatId": _chat_id(to_number), "caption": message,
+                "session": session, "chatId": chat_id, "caption": message,
                 "file": {"url": media_url, "mimetype": mimetype, "filename": media_filename},
             }
         else:
             path = "/api/sendText"
-            payload = {"session": session, "chatId": _chat_id(to_number), "text": message}
+            payload = {"session": session, "chatId": chat_id, "text": message}
 
         accepted = False
         provider_message_id = None
