@@ -997,7 +997,10 @@ export default function CustomersScreen() {
     const [imgError, setImgError] = React.useState(false);
     // Use backend endpoint which fetches fresh from Evolution API and proxies the image.
     // Token passed as query param because React Native Image can't set custom headers.
-    const picUrl = customer.profile_picture && token
+    // Ask Zilo's proxy for visible contacts even when a background sync has
+    // not stored the WhatsApp URL yet. The proxy uses WAHA's cache, so this
+    // does not force-refresh the contact on every render.
+    const picUrl = token
       ? `${BACKEND_URL}/api/customers/${customer.id}/profile-picture?token=${encodeURIComponent(token)}`
       : null;
     if (picUrl && !imgError) {
