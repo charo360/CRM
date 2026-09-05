@@ -33,10 +33,11 @@ if (dirty) {
   message = `${message} (+ uncommitted changes)`;
 }
 
+const safeMessage = message.replace(/"/g, '\\"');
 console.log(`Publishing to "${channel}": ${message}\n`);
 
 execFileSync(
   'eas',
-  ['update', '--channel', channel, '--platform', 'android', '--message', message],
+  ['update', '--channel', channel, '--platform', 'android', '--message', `"${safeMessage}"`],
   { stdio: 'inherit', shell: true },
 );
