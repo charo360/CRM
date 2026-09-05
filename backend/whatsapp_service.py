@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 EVOLUTION_API_URL: str = os.environ.get("EVOLUTION_API_URL", "http://localhost:8080")
 EVOLUTION_API_KEY: str = os.environ.get("EVOLUTION_API_KEY", "")
 EVOLUTION_API_VERIFY_SSL: bool = os.environ.get("EVOLUTION_API_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
-WHATSAPP_PROVIDER: str = os.environ.get("WHATSAPP_PROVIDER", "evolution").strip().lower()
+WHATSAPP_PROVIDER: str = os.environ.get("WHATSAPP_PROVIDER", "waha").strip().lower()
 
 # Randomized pause between consecutive broadcast/bulk sends (min, max) seconds.
 # Human-like pacing is the single most important anti-ban measure for bulk
@@ -47,13 +47,10 @@ def whatsapp_owner_id(user: dict) -> str:
 
 
 def evolution_config_error() -> Optional[str]:
-    """Backward-compatible provider configuration check used by existing routes."""
-    if WHATSAPP_PROVIDER == "waha":
-        from waha_service import waha_config_error
-        return waha_config_error()
-    if not EVOLUTION_API_KEY.strip():
-        return "WhatsApp linking is not configured on this server. Please contact support."
-    return None
+    """Provider configuration check used by existing routes. Always WAHA now."""
+    from waha_service import waha_config_error
+
+    return waha_config_error()
 
 
 def _jid_to_phone(jid: str) -> str:
@@ -906,14 +903,19 @@ class WhatsAppService:
         instance_name = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
         try:
             async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
-                resp = await client.get(
+                resp = await client.post(
                     f"{self.base_url}/chat/fetchProfilePictureUrl/{instance_name}",
                     headers=self._headers(),
-                    params={"number": phone},
+                    json={"number": phone},
                 )
                 if resp.status_code in (200, 201):
                     data = resp.json()
-                    return data.get("profilePictureUrl") or data.get("url") or None
+                    return (
+                        data.get("profilePictureUrl")
+                        or data.get("profilePictureURL")
+                        or data.get("url")
+                        or None
+                    )
         except Exception as e:
             logger.debug(f"[fetch_profile_picture] {phone}: {e}")
         return None
@@ -1246,20 +1248,14 @@ _whatsapp_service: Optional[WhatsAppService] = None
 
 
 def get_whatsapp_service(db) -> WhatsAppService:
-    """Return the configured provider without changing callers across the app."""
+    """Return the WAHA adapter. Evolution has been removed from the server."""
     global _whatsapp_service
-    provider = os.environ.get("WHATSAPP_PROVIDER", WHATSAPP_PROVIDER).strip().lower()
-    service_class = WhatsAppService
-    if provider == "waha":
-        from waha_service import WahaWhatsAppService
-        service_class = WahaWhatsAppService
-    elif provider != "evolution":
-        logger.warning("Unknown WHATSAPP_PROVIDER=%r; using Evolution API", provider)
+    from waha_service import WahaWhatsAppService
 
     if (
         _whatsapp_service is None
         or _whatsapp_service.db is not db
-        or not isinstance(_whatsapp_service, service_class)
+        or not isinstance(_whatsapp_service, WahaWhatsAppService)
     ):
-        _whatsapp_service = service_class(db)
+        _whatsapp_service = WahaWhatsAppService(db)
     return _whatsapp_service

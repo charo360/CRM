@@ -9678,7 +9678,7 @@ async def whatsapp_sync(user = Depends(get_current_user)):
 
 @api_router.get("/customers/{customer_id}/profile-picture")
 async def get_customer_profile_picture(customer_id: str, token: str = Query(default=None), request: Request = None):
-    """Fetch a fresh profile picture for a customer directly from Evolution API.
+    """Fetch a fresh profile picture for a customer via the configured WhatsApp provider.
     Accepts token as Bearer header OR ?token= query param (needed for React Native Image src).
     """
     from fastapi.responses import Response as FastAPIResponse
@@ -9702,19 +9702,48 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
         raise HTTPException(status_code=401, detail="User not found")
 
     business_id = user.get("business_id", user["_id"])
-    customer_full = await db.customers.find_one({"_id": customer_id, "user_id": business_id}, {"phone_number": 1, "profile_picture": 1})
+    customer_full = await db.customers.find_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"phone_number": 1, "profile_picture": 1},
+    )
     if not customer_full:
         raise HTTPException(status_code=404, detail="Customer not found")
 
     async def _proxy_url(url: str):
         """Try to fetch an image URL and return Response, or None if it fails."""
         try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            }
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                img_resp = await client.get(url)
-                if img_resp.status_code == 200 and img_resp.headers.get("content-type", "").startswith("image/"):
+                img_resp = await client.get(url, headers=headers)
+                if img_resp.status_code != 200:
+                    return None
+                content_type = img_resp.headers.get("content-type", "").lower()
+                media_type = None
+                if content_type.startswith("image/"):
+                    media_type = content_type.split(";")[0].strip() or "image/jpeg"
+                else:
+                    ext = (img_resp.url.path.split("?")[0].split(".")[-1] or "").lower()
+                    ext_map = {
+                        "jpg": "image/jpeg",
+                        "jpeg": "image/jpeg",
+                        "png": "image/png",
+                        "gif": "image/gif",
+                        "webp": "image/webp",
+                        "avif": "image/avif",
+                        "svg": "image/svg+xml",
+                    }
+                    media_type = ext_map.get(ext)
+                if media_type:
                     return FastAPIResponse(
                         content=img_resp.content,
-                        media_type=img_resp.headers.get("content-type", "image/jpeg"),
+                        media_type=media_type,
                         headers={"Cache-Control": "public, max-age=3600"},
                     )
         except Exception:

@@ -688,13 +688,31 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         session = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
         try:
             _, base_url = await self._node_for_user(user_id)
+            candidates = [_chat_id(phone), _digits(phone)]
             async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
-                response = await client.get(
-                    f"{base_url}/api/contacts/profile-picture", headers=self._headers(),
-                    params={"contactId": _chat_id(phone), "session": session},
-                )
-            if response.status_code == 200:
-                return response.json().get("profilePictureURL")
+                for contact_id in candidates:
+                    response = await client.get(
+                        f"{base_url}/api/contacts/profile-picture",
+                        headers=self._headers(),
+                        params={"contactId": contact_id, "session": session, "refresh": "true"},
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        pic = (
+                            data.get("profilePictureURL")
+                            or data.get("profilePictureUrl")
+                            or data.get("url")
+                            or None
+                        )
+                        if pic:
+                            return pic
+                    else:
+                        logger.debug(
+                            "[waha.fetch_profile_picture] non-200 %s for %s: %s",
+                            response.status_code,
+                            contact_id,
+                            response.text[:200],
+                        )
         except Exception as exc:
             logger.debug("[waha.fetch_profile_picture] %s", exc)
         return None

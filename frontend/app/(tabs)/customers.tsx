@@ -1007,14 +1007,15 @@ export default function CustomersScreen() {
       return (
         <Image
           source={{ uri: picUrl }}
-          style={[styles.customerAvatar, styles.avatarImage]}
+          style={styles.contactAvatar}
+          resizeMode="cover"
           onError={() => setImgError(true)}
         />
       );
     }
     return (
-      <View style={[styles.customerAvatar, customer.tags.includes('VIP') && { backgroundColor: '#FFD700' }]}>
-        <Text style={styles.avatarText}>{customer.name.charAt(0).toUpperCase()}</Text>
+      <View style={[styles.contactAvatar, customer.tags.includes('VIP') && { backgroundColor: '#FFD700' }]}>
+        <Text style={styles.contactAvatarText}>{customer.name.charAt(0).toUpperCase()}</Text>
       </View>
     );
   };
