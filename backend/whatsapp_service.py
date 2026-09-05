@@ -921,7 +921,14 @@ class WhatsAppService:
     async def fetch_profile_pictures_bulk(self, user_id: str) -> dict:
         """Fetch and store profile pictures for all contacts of a user."""
         customers = await self.db.customers.find(
-            {"user_id": user_id, "profile_picture": {"$exists": False}},
+            {
+                "user_id": user_id,
+                "$or": [
+                    {"profile_picture": {"$exists": False}},
+                    {"profile_picture": None},
+                    {"profile_picture": ""},
+                ],
+            },
             {"_id": 1, "phone_number": 1},
         ).to_list(200)
 

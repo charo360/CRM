@@ -16,6 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { apiClient, messageHelpers } from '../context/api';
+import { useAuth } from '../context/AuthContext';
 import LoyaltyCard from './components/LoyaltyCard';
 import CustomerFeedbackModal from './components/CustomerFeedbackModal';
 import { useBusiness } from '../context/BusinessContext';
@@ -24,6 +25,7 @@ const TAGS = ['New', 'VIP', 'Returning', 'Wholesale'];
 
 export default function CustomerProfileScreen() {
   const router = useRouter();
+  const { token } = useAuth();
   const params = useLocalSearchParams<{
     customerId: string;
     customerName: string;
@@ -42,11 +44,17 @@ export default function CustomerProfileScreen() {
   const [totalSpent, setTotalSpent] = useState(0);
   const [bookingCount, setBookingCount] = useState(0);
   const [currency, setCurrency] = useState('USD');
-  const [profilePicture, setProfilePicture] = useState<string | null>(null);
   const [imgError, setImgError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showTagInput, setShowTagInput] = useState(false);
+
+  // WhatsApp image URLs are short-lived and cannot reliably be displayed by
+  // React Native directly. The Zilo endpoint refreshes and proxies them.
+  const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+  const profilePictureUrl = token && customerId
+    ? `${backendUrl}/api/customers/${customerId}/profile-picture?token=${encodeURIComponent(token)}`
+    : null;
   const [newTagText, setNewTagText] = useState('');
   const scrollRef = useRef<ScrollView>(null);
   const [activeTab, setActiveTab] = useState<'info' | 'timeline' | 'loyalty' | 'feedback'>('info');
@@ -76,7 +84,6 @@ export default function CustomerProfileScreen() {
         const bkRes = await apiClient.get(`/bookings?customer_id=${customerId}`);
         setBookingCount(Array.isArray(bkRes.data) ? bkRes.data.length : 0);
       } catch (_) {}
-      setProfilePicture(c.profile_picture || null);
       setImgError(false);
       if (settingsRes.data?.currency) setCurrency(settingsRes.data.currency);
     } catch (error) {
@@ -196,9 +203,9 @@ export default function CustomerProfileScreen() {
       <ScrollView ref={scrollRef} style={styles.content} keyboardShouldPersistTaps="handled">
         {/* Avatar + Name */}
         <View style={styles.profileSection}>
-          {profilePicture && !imgError ? (
+          {profilePictureUrl && !imgError ? (
             <Image
-              source={{ uri: profilePicture }}
+              source={{ uri: profilePictureUrl }}
               style={styles.avatarLargeImage}
               onError={() => setImgError(true)}
             />

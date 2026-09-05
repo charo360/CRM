@@ -872,7 +872,7 @@ export default function AccountScreen() {
           <View style={styles.creditsCard}>
             <View style={styles.creditsLeft}>
               <Ionicons name="flash" size={28} color="#F59E0B" />
-              <View style={{ marginLeft: 12 }}>
+              <View style={styles.creditsDetails}>
                 <Text style={styles.creditsValue}>{extraCredits.toLocaleString()}</Text>
                 <Text style={styles.creditsLabel}>Extra WhatsApp messages available</Text>
               </View>
@@ -1661,6 +1661,13 @@ const styles = StyleSheet.create({
   creditsLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+  },
+  creditsDetails: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: 12,
   },
   creditsValue: {
     fontSize: 22,
@@ -1671,12 +1678,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8A9BB5',
     marginTop: 2,
+    flexShrink: 1,
+    flexWrap: 'wrap',
   },
   buyCreditsButton: {
     backgroundColor: '#F59E0B',
     borderRadius: 10,
     paddingHorizontal: 16,
     paddingVertical: 10,
+    marginLeft: 12,
+    flexShrink: 0,
   },
   buyCreditsText: {
     fontSize: 14,
