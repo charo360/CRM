@@ -9698,6 +9698,19 @@ async def whatsapp_sync(user = Depends(get_current_user)):
         }
     }
 
+@api_router.post("/whatsapp/repair-lids")
+async def whatsapp_repair_lids(user = Depends(get_current_user)):
+    """Repair prior WAHA contacts that stored a WhatsApp LID as a phone number."""
+    whatsapp_service = get_whatsapp_service(db)
+    status = await whatsapp_service.get_instance_status(user["_id"])
+    if not status.get("connected"):
+        raise HTTPException(status_code=400, detail="WhatsApp must be connected before contacts can be repaired")
+    if not hasattr(whatsapp_service, "repair_lid_contacts"):
+        raise HTTPException(status_code=400, detail="This WhatsApp provider does not support LID repair")
+    result = await whatsapp_service.repair_lid_contacts(user["_id"])
+    logging.info("WhatsApp LID repair for %s: %s", user["_id"], result)
+    return result
+
 @api_router.get("/customers/{customer_id}/profile-picture")
 async def get_customer_profile_picture(customer_id: str, token: str = Query(default=None), request: Request = None):
     """Fetch a fresh profile picture for a customer via the configured WhatsApp provider.
@@ -10581,11 +10594,12 @@ async def evolution_webhook(request: Request):
         
             # Find or create customer (the contact on the other end)
             remote_jid_val = parsed.get("remote_jid", "")
-            customer_name = push_name or f"Contact {from_number[-4:]}"
-            customer = await db.customers.find_one({
-                "user_id": user["_id"],
-                **_phone_match_clause(from_number)
-            })
+            number_unavailable = bool(parsed.get("phone_number_unavailable"))
+            customer_name = push_name or ("WhatsApp contact" if number_unavailable else f"Contact {from_number[-4:]}")
+            customer = await db.customers.find_one(
+                {"user_id": user["_id"], "lid_jid": remote_jid_val}
+                if number_unavailable else {"user_id": user["_id"], **_phone_match_clause(from_number)}
+            )
 
             # If the incoming JID is a LID, a previous webhook may have created
             # the customer with the fabricated LID as phone_number. Try to find
@@ -10595,7 +10609,7 @@ async def evolution_webhook(request: Request):
                     "user_id": user["_id"],
                     "lid_jid": remote_jid_val,
                 })
-                if customer:
+                if customer and not number_unavailable:
                     await db.customers.update_one(
                         {"_id": customer["_id"]},
                         {"$set": {"phone_number": from_number}}
@@ -10639,7 +10653,7 @@ async def evolution_webhook(request: Request):
                     "_id": customer_id,
                     "user_id": user["_id"],
                     "name": customer_name,
-                    "phone_number": from_number,
+                    "phone_number": "" if number_unavailable else from_number,
                     "notes": "",
                     "tags": ["New"],
                     "last_message": body[:200] if body else None,
@@ -10649,6 +10663,7 @@ async def evolution_webhook(request: Request):
                     "is_customer": False,
                     "customer_initiated": not from_me,
                     **({"lid_jid": parsed["remote_jid"]} if "@lid" in parsed.get("remote_jid", "") else {}),
+                    **({"phone_number_unavailable": True} if number_unavailable else {}),
                 })
                 logging.info(f"Auto-created contact from WhatsApp: {customer_name} ({from_number})")
                 

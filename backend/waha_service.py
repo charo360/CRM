@@ -220,9 +220,10 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         """Resolve a WhatsApp LID JID to the underlying phone number via WAHA.
 
         When a modern WhatsApp account uses a linked-identity (LID) chat,
-        the JID contains an opaque ID rather than the real phone number.
-        WAHA's /api/contacts endpoint can map that LID back to the actual
-        number, which we then validate before storing or messaging.
+        the JID contains an opaque ID rather than the real phone number. Do
+        not use the generic contacts endpoint here: for a LID it can return
+        the LID itself in ``number``. WAHA's dedicated lids endpoint returns
+        ``pn`` only when WhatsApp has actually exposed a phone number.
         """
         now = datetime.utcnow().timestamp()
         cache_entry = self._lid_phone_cache.get(remote_jid)
@@ -237,14 +238,15 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         try:
             async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
                 response = await client.get(
-                    f"{base_url}/api/contacts",
+                    # WAHA accepts either the bare numeric LID or an escaped
+                    # ``123@lid`` here. The bare identifier avoids a proxy
+                    # accidentally treating @ as a path token.
+                    f"{base_url}/api/{quote(session, safe='')}/lids/{quote(remote_jid.split('@', 1)[0], safe='')}",
                     headers=self._headers(),
-                    params={"contactId": remote_jid, "session": session},
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    number = data.get("number") or _jid_to_phone(str(data.get("id") or ""))
-                    phone = _digits(number)
+                    phone = _digits(str(data.get("pn") or ""))
                     if _is_phone_like(phone):
                         self._lid_phone_cache[remote_jid] = (phone, now + 600)
                         return phone
@@ -252,6 +254,74 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             logger.debug("[waha._resolve_lid_phone] %s", exc)
         self._lid_phone_cache[remote_jid] = (None, now + 60)
         return None
+
+    async def repair_lid_contacts(self, user_id: str) -> dict:
+        """Repair contacts previously saved with a LID as their phone number.
+
+        Older webhook handling could save the digits from ``123@lid`` into
+        ``phone_number``. Repair only records that are tied to a LID message;
+        WhatsApp intentionally withholds some mappings, so guessing a number
+        would be worse than showing no number.
+        """
+        mappings: dict[str, str] = {}
+        pipeline = [
+            {"$match": {"user_id": user_id, "remote_jid": {"$regex": r"^[0-9]+@lid$"}}},
+            {"$group": {"_id": {"customer_id": "$customer_id", "lid": "$remote_jid"}}},
+        ]
+        async for row in self.db.messages.aggregate(pipeline):
+            entry = row.get("_id") or {}
+            customer_id = entry.get("customer_id")
+            lid = entry.get("lid")
+            if customer_id and lid:
+                mappings[str(customer_id)] = str(lid)
+
+        repaired = unavailable = merged = 0
+        for customer_id, lid in mappings.items():
+            customer = await self.db.customers.find_one({"_id": customer_id, "user_id": user_id})
+            if not customer:
+                continue
+            phone = await self._resolve_lid_phone(user_id, lid)
+            if not phone:
+                if _digits(str(customer.get("phone_number") or "")) == _digits(lid):
+                    await self.db.customers.update_one(
+                        {"_id": customer_id},
+                        {"$set": {"phone_number": "", "lid_jid": lid, "phone_number_unavailable": True}},
+                    )
+                    unavailable += 1
+                continue
+
+            duplicate = await self.db.customers.find_one({
+                "user_id": user_id,
+                "_id": {"$ne": customer_id},
+                "$or": [{"phone_number": phone}, {"phone_number": f"+{phone}"}],
+            })
+            if duplicate:
+                # Keep one contact and move its complete message history there.
+                await self.db.messages.update_many(
+                    {"user_id": user_id, "customer_id": customer_id},
+                    {"$set": {"customer_id": duplicate["_id"]}},
+                )
+                merged_tags = list(dict.fromkeys((duplicate.get("tags") or []) + (customer.get("tags") or [])))
+                update = {"tags": merged_tags, "lid_jid": lid}
+                if not duplicate.get("profile_picture") and customer.get("profile_picture"):
+                    update["profile_picture"] = customer["profile_picture"]
+                await self.db.customers.update_one({"_id": duplicate["_id"]}, {"$set": update})
+                await self.db.customers.delete_one({"_id": customer_id})
+                merged += 1
+            else:
+                await self.db.customers.update_one(
+                    {"_id": customer_id},
+                    {"$set": {"phone_number": phone, "lid_jid": lid}, "$unset": {"phone_number_unavailable": ""}},
+                )
+                repaired += 1
+
+        return {
+            "status": "success",
+            "contacts_checked": len(mappings),
+            "repaired": repaired,
+            "merged": merged,
+            "number_unavailable": unavailable,
+        }
 
     async def _start_session(self, base_url: str, instance_name: str, config: dict) -> dict:
         """Create/update/start a session without deleting an existing auth state."""
@@ -506,29 +576,34 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         if limits.get("remaining", 0) <= 0:
             return {"status": "limit_reached", "message": f"Daily limit of {limits['daily_limit']} messages reached."}
 
-        to_number = _digits(to_number)
-        if not to_number or len(to_number) < 6 or len(to_number) > 15:
+        destination = str(to_number or "").strip()
+        destination_is_lid = _is_lid_jid(destination)
+        to_number = _digits(destination)
+        if not destination_is_lid and (not to_number or len(to_number) < 6 or len(to_number) > 15):
             return {"status": "error", "message": "Invalid phone number"}
 
-        customer = await self.db.customers.find_one({
+        customer_query = {"user_id": user_id, "lid_jid": destination} if destination_is_lid else {
             "user_id": user_id,
             "$or": [{"phone_number": to_number}, {"phone_number": f"+{to_number}"}],
-        })
+        }
+        customer = await self.db.customers.find_one(customer_query)
         if customer:
             customer_id = customer["_id"]
         else:
             customer_id = str(uuid.uuid4())
             await self.db.customers.insert_one({
                 "_id": customer_id, "user_id": user_id,
-                "name": customer_name or f"Contact {to_number[-4:]}", "phone_number": to_number,
+                "name": customer_name or ("WhatsApp contact" if destination_is_lid else f"Contact {to_number[-4:]}"),
+                "phone_number": "" if destination_is_lid else to_number,
                 "notes": "", "tags": ["New"], "last_contacted": datetime.utcnow(),
                 "created_at": datetime.utcnow(), "auto_created": False, "business_initiated": True,
+                **({"lid_jid": destination, "phone_number_unavailable": True} if destination_is_lid else {}),
             })
 
         # Prefer WhatsApp's current LID for a known inbound contact.  NOWEB
         # reports LID chats on modern WhatsApp accounts; translating them to a
         # phone JID is accepted by the API but can silently fail delivery.
-        chat_id = customer.get("lid_jid") if customer else None
+        chat_id = destination if destination_is_lid else (customer.get("lid_jid") if customer else None)
         if not _is_lid_jid(chat_id):
             latest_inbound = await self.db.messages.find_one(
                 {
@@ -549,7 +624,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             "_id": message_id, "customer_id": customer_id, "user_id": user_id,
             "direction": "outgoing", "content": message,
             "message_type": "image" if media_url and is_image else ("document" if media_url else "text"),
-            "from_number": to_number, "remote_jid": chat_id,
+            "from_number": "" if destination_is_lid else to_number, "remote_jid": chat_id,
             "created_at": datetime.utcnow(), "send_context": send_context,
             "delivery_status": "pending",
         }
@@ -611,7 +686,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             return {
                 "status": "success", "delivered": True, "customer_id": customer_id,
                 "message_id": message_id, "evo_message_id": provider_message_id,
-                "customer_name": customer_name or (customer or {}).get("name", f"Contact {to_number[-4:]}"),
+                "customer_name": customer_name or (customer or {}).get("name", "WhatsApp contact" if destination_is_lid else f"Contact {to_number[-4:]}"),
                 "created_new_contact": customer is None,
             }
 
@@ -642,20 +717,32 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             for contact in contacts if isinstance(contacts, list) else []:
                 if contact.get("isGroup"):
                     continue
-                phone = _digits(str(contact.get("number") or _jid_to_phone(str(contact.get("id") or ""))))
-                if len(phone) < 6:
+                contact_id = str(contact.get("id") or "")
+                is_lid_contact = _is_lid_jid(contact_id)
+                if is_lid_contact:
+                    phone = await self._resolve_lid_phone(user_id, contact_id)
+                else:
+                    phone = _digits(str(contact.get("number") or _jid_to_phone(contact_id)))
+                if not phone or not _is_phone_like(phone):
+                    # Do not bulk-create a contact with the opaque LID digits.
+                    # A later inbound message can still create a LID-backed
+                    # contact, preserving the chat without fabricating a phone.
                     continue
                 name = contact.get("name") or contact.get("pushname") or contact.get("shortName") or f"Contact {phone[-4:]}"
                 existing = await self.db.customers.find_one({"user_id": user_id, "phone_number": phone})
                 if existing:
                     if re.match(r"^(Customer|Contact)\s+\d+$", existing.get("name", "")) and not re.match(r"^(Customer|Contact)\s+\d+$", name):
-                        await self.db.customers.update_one({"_id": existing["_id"]}, {"$set": {"name": name, "synced_from_whatsapp": True}})
+                        update = {"name": name, "synced_from_whatsapp": True}
+                        if is_lid_contact:
+                            update["lid_jid"] = contact_id
+                        await self.db.customers.update_one({"_id": existing["_id"]}, {"$set": update})
                         updated += 1
                 else:
                     await self.db.customers.insert_one({
                         "_id": str(uuid.uuid4()), "user_id": user_id, "name": name, "phone_number": phone,
                         "notes": "", "tags": ["New"], "created_at": datetime.utcnow(), "auto_created": True,
                         "synced_from_whatsapp": True, "is_customer": False,
+                        **({"lid_jid": contact_id} if is_lid_contact else {}),
                     })
                     created += 1
             return {"status": "success", "created": created, "updated": updated, "total": len(contacts) if isinstance(contacts, list) else 0}
@@ -856,14 +943,15 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
 
         # LID JIDs carry an opaque identity, not a real phone number. Ask WAHA to
         # resolve it so the CRM never stores a fabricated number again.
-        if _is_lid_jid(remote_jid):
+        is_lid = _is_lid_jid(remote_jid)
+        if is_lid:
             phone = await self._resolve_lid_phone(user["_id"], remote_jid)
         else:
             phone = _digits(_jid_to_phone(remote_jid))
             if not _is_phone_like(phone):
                 phone = None
 
-        if not phone:
+        if not phone and not is_lid:
             logger.warning(
                 "[waha.handle_incoming_message] dropping message from %s; no real phone number",
                 remote_jid,
@@ -872,9 +960,12 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
 
         media = data.get("media") or {}
         return {
-            "user": user, "from_number": phone, "body": data.get("body") or "",
+            # Keep an unresolved LID as the delivery target, but never present
+            # its digits as a phone number in the CRM.
+            "user": user, "from_number": phone or remote_jid, "body": data.get("body") or "",
             "push_name": data.get("pushName") or data.get("notifyName") or "", "from_me": from_me,
             "evo_message_id": data.get("id") or "", "remote_jid": remote_jid,
+            "phone_number_unavailable": is_lid and not bool(phone),
             "message_type": _message_type(media), "image_url": media.get("url"), "file_name": media.get("filename"),
         }
 

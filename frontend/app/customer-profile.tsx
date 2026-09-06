@@ -35,6 +35,7 @@ export default function CustomerProfileScreen() {
   const customerId = params.customerId || '';
   const initialName = params.customerName || '';
   const customerPhone = params.customerPhone || '';
+  const visiblePhone = customerPhone || 'Phone number hidden by WhatsApp';
 
   const { isServiceBusiness, businessType: bizType } = useBusiness();
   const [name, setName] = useState(initialName);
@@ -214,7 +215,7 @@ export default function CustomerProfileScreen() {
               <Text style={styles.avatarLargeText}>{name.charAt(0).toUpperCase()}</Text>
             </View>
           )}
-          <Text style={styles.phoneText}>{customerPhone}</Text>
+          <Text style={styles.phoneText}>{visiblePhone}</Text>
           {isServiceBusiness ? (
             bookingCount > 0 && (
               <Text style={styles.statsText}>

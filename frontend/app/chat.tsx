@@ -50,6 +50,7 @@ export default function ChatScreen() {
   const customerId = params.customerId || '';
   const customerName = params.customerName || 'Customer';
   const customerPhone = params.customerPhone || '';
+  const visiblePhone = customerPhone || 'Phone number hidden by WhatsApp';
   const prefill = params.prefill || '';
 
   const insets = useSafeAreaInsets();
@@ -676,7 +677,7 @@ export default function ChatScreen() {
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.headerName}>{customerName}</Text>
-            <Text style={styles.headerPhone}>{customerPhone}</Text>
+            <Text style={styles.headerPhone}>{visiblePhone}</Text>
           </View>
         </TouchableOpacity>
 
