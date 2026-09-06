@@ -835,7 +835,16 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         session = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
         try:
             _, base_url = await self._node_for_user(user_id)
-            candidates = [_chat_id(phone), _digits(phone)]
+            # WAHA can retrieve a profile photo with either a conventional
+            # phone JID or an opaque LID JID. LIDs must stay intact here:
+            # converting their digits to ``@c.us`` is wrong and makes profile
+            # photos disappear after LID handling is tightened.
+            contact_ref = str(phone or "").strip()
+            candidates = (
+                [contact_ref, contact_ref.split("@", 1)[0]]
+                if _is_lid_jid(contact_ref)
+                else [_chat_id(contact_ref), _digits(contact_ref)]
+            )
             async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
                 for contact_id in candidates:
                     response = await client.get(
@@ -863,6 +872,36 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         except Exception as exc:
             logger.debug("[waha.fetch_profile_picture] %s", exc)
         return None
+
+    async def fetch_profile_pictures_bulk(self, user_id: str) -> dict:
+        """Fetch missing pictures, including contacts represented by a LID."""
+        customers = await self.db.customers.find(
+            {
+                "user_id": user_id,
+                "$or": [
+                    {"profile_picture": {"$exists": False}},
+                    {"profile_picture": None},
+                    {"profile_picture": ""},
+                ],
+            },
+            {"_id": 1, "phone_number": 1, "lid_jid": 1},
+        ).to_list(200)
+
+        updated = 0
+        for customer in customers:
+            # WAHA can fetch a photo from a LID even when WhatsApp keeps the
+            # underlying phone number private.
+            contact_ref = customer.get("lid_jid") or customer.get("phone_number")
+            if not contact_ref:
+                continue
+            picture = await self.fetch_profile_picture(user_id, str(contact_ref))
+            if picture:
+                await self.db.customers.update_one(
+                    {"_id": customer["_id"]},
+                    {"$set": {"profile_picture": picture}},
+                )
+                updated += 1
+        return {"status": "success", "updated": updated, "checked": len(customers)}
 
     async def mark_as_read(self, instance_name: str, remote_jid: str, evo_msg_id: str) -> None:
         try:

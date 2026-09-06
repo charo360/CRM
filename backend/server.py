@@ -4485,10 +4485,35 @@ def _normalize_phone(phone: str) -> str:
         digits = digits[:15]
     return digits
 
+async def _repair_lids_in_background(business_id: str) -> None:
+    """Backfill legacy WhatsApp LID contacts without delaying a screen load."""
+    try:
+        # A contact list can refresh several times while the app is open. Claim
+        # the repair once per hour so it cannot hammer WAHA for the same LIDs.
+        now = datetime.utcnow()
+        claimed = await db.users.update_one(
+            {
+                "_id": business_id,
+                "$or": [
+                    {"whatsapp.lid_repair_started_at": {"$exists": False}},
+                    {"whatsapp.lid_repair_started_at": {"$lt": now - timedelta(hours=1)}},
+                ],
+            },
+            {"$set": {"whatsapp.lid_repair_started_at": now}},
+        )
+        if not claimed.modified_count:
+            return
+        service = get_whatsapp_service(db)
+        if hasattr(service, "repair_lid_contacts"):
+            await service.repair_lid_contacts(business_id)
+    except Exception as exc:
+        logging.debug("Background LID repair skipped for %s: %s", business_id, exc)
+
 @api_router.get("/customers/all-contacts")
 async def get_all_contacts(user = Depends(get_current_user)):
     """Return all contacts synced from WhatsApp regardless of customer/supplier status"""
     business_id = user.get("business_id", user["_id"])
+    asyncio.create_task(_repair_lids_in_background(business_id))
     contacts = await db.customers.find({"user_id": business_id}).sort("created_at", -1).to_list(2000)
     result = []
     for c in contacts:
@@ -4563,6 +4588,7 @@ async def create_contact_as_customer_endpoint(contact: ContactCreate, user = Dep
 async def get_contacts(search: str = "", user = Depends(get_current_user)):
     """Return all WhatsApp-synced contacts that are NOT yet customers."""
     business_id = user.get("business_id", user["_id"])
+    asyncio.create_task(_repair_lids_in_background(business_id))
     query = {
         "user_id": business_id,
         "is_customer": False,
@@ -4708,6 +4734,8 @@ async def get_customers(
     """
     business_id = user.get("business_id", user["_id"])
     user_role = user.get("role", "owner")
+
+    asyncio.create_task(_repair_lids_in_background(business_id))
     
     # Base query uses business_id for multi-user support
     # Only return explicit customers — WhatsApp-synced contacts live in /contacts
@@ -9739,7 +9767,7 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
     business_id = user.get("business_id", user["_id"])
     customer_full = await db.customers.find_one(
         {"_id": customer_id, "user_id": business_id},
-        {"phone_number": 1, "profile_picture": 1},
+        {"phone_number": 1, "lid_jid": 1, "profile_picture": 1},
     )
     if not customer_full:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -9795,7 +9823,11 @@ async def get_customer_profile_picture(customer_id: str, token: str = Query(defa
     # Step 2: Stored URL expired or missing — re-fetch from Evolution API
     whatsapp_service = get_whatsapp_service(db)
     try:
-        pic_url = await whatsapp_service.fetch_profile_picture(business_id, customer_full["phone_number"])
+        # A LID is never shown as a phone number, but WAHA can use it to get
+        # the customer's WhatsApp profile photo when the real number is kept
+        # private by WhatsApp.
+        contact_ref = customer_full.get("lid_jid") or customer_full.get("phone_number")
+        pic_url = await whatsapp_service.fetch_profile_picture(business_id, contact_ref) if contact_ref else None
     except Exception:
         pic_url = None
 
