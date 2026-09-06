@@ -369,13 +369,28 @@ def sanitize_string(value: str, max_length: int = 500) -> str:
     return value[:max_length]
 
 def sanitize_phone(phone: str) -> str:
-    """Normalize phone number: keep only digits and leading +."""
+    """Normalize phone number: keep only digits and a leading +."""
     if not phone:
         return phone
     phone = phone.strip()
-    if phone.startswith('+'):
-        return '+' + _re.sub(r'[^\d]', '', phone[1:])
-    return _re.sub(r'[^\d]', '', phone)
+    digits = _re.sub(r'[^\d]', '', phone)
+    if phone.startswith('+') and digits:
+        return '+' + digits
+    return digits
+
+
+def _phone_match_clause(phone: str) -> dict:
+    """Match a normalized phone number whether the stored value has a leading + or not."""
+    clean = sanitize_phone(phone)
+    if not clean:
+        return {"phone_number": ""}
+    # Always search both forms so + and non-+ records are treated as the same number.
+    candidates = {clean}
+    if clean.startswith('+'):
+        candidates.add(clean[1:])
+    else:
+        candidates.add(f"+{clean}")
+    return {"$or": [{"phone_number": c} for c in candidates]}
 
 # === AGENT SYSTEM ===
 print("[DEBUG] Loading agents...")
@@ -2431,6 +2446,9 @@ async def whatsapp_auth_check(request: WhatsAppAuthCheck):
             "phone_number": phone,
             "business_name": user.get("business_name", ""),
             "owner_name": user.get("owner_name", ""),
+            # A verified phone account is not usable as a business until the
+            # merchant has completed the short business-profile step.
+            "setup_complete": not is_new_user_flag,
             "subscription_active": user.get("subscription_active", False),
         }
     })
@@ -2969,6 +2987,7 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
             "phone_number": user["phone_number"],
             "business_name": user_data.business_name,
             "owner_name": user_data.owner_name or "",
+            "setup_complete": True,
             "role": TeamMemberRole.OWNER,
             "business_id": user["_id"],
             "subscription_active": user.get("subscription_active", False),
@@ -3016,6 +3035,9 @@ async def get_me(user = Depends(get_current_user)):
         "currency": user.get("currency", "USD"),
         "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"]),
         "auth_provider": user.get("auth_provider", "whatsapp"),
+        # Mobile uses this to resume an interrupted business-profile setup
+        # instead of opening an empty dashboard after the next app launch.
+        "setup_complete": bool(user.get("setup_complete", bool(user.get("business_name")))),
     })
 
 # ============ USER SETTINGS ============
@@ -4348,7 +4370,7 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
     if not clean_name:
         raise HTTPException(status_code=400, detail="Customer name is required")
     clean_email = (customer.email or "").strip().lower() or None
-    if (not clean_phone or len(clean_phone) < 6) and not clean_email:
+    if (not clean_phone or len(clean_phone) < 6 or len(clean_phone) > 15) and not clean_email:
         raise HTTPException(status_code=400, detail="A valid phone number or email is required")
 
     customer_id = str(uuid.uuid4())
@@ -4372,7 +4394,7 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
         await db.customers.insert_one(customer_doc)
     except Exception as e:
         if "duplicate" in str(e).lower() or "E11000" in str(e):
-            existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+            existing = await db.customers.find_one({"user_id": business_id, **_phone_match_clause(clean_phone)})
             if existing:
                 # Promote to customer if not already
                 if not existing.get("is_customer"):
@@ -4442,9 +4464,9 @@ async def create_customer(customer: CustomerCreate, user = Depends(get_current_u
     return CustomerResponse(
         id=customer_id,
         user_id=business_id,
-        name=customer.name,
-        phone_number=customer.phone_number,
-        notes=customer.notes,
+        name=clean_name,
+        phone_number=clean_phone,
+        notes=clean_notes,
         tags=customer_doc["tags"],
         purchase_count=0,
         total_spent=0.0,
@@ -4493,9 +4515,9 @@ async def create_contact_as_customer_endpoint(contact: ContactCreate, user = Dep
     clean_name = sanitize_string(contact.name, 200)
     clean_phone = sanitize_phone(contact.phone) if contact.phone else ""
     clean_notes = sanitize_string(contact.notes, 2000) if contact.notes else ""
-    
+
     if clean_phone:
-        existing = await db.customers.find_one({"user_id": business_id, "phone_number": clean_phone})
+        existing = await db.customers.find_one({"user_id": business_id, **_phone_match_clause(clean_phone)})
         if existing:
             if not existing.get("is_customer"):
                 await db.customers.update_one({"_id": existing["_id"]}, {"$set": {"is_customer": True}})
@@ -10043,11 +10065,15 @@ async def send_whatsapp_media(
     """
     try:
         business_id = user.get("business_id", user["_id"])
-        
+
+        to_number = sanitize_phone(to_number)
+        if not to_number or len(to_number) < 6 or len(to_number) > 15:
+            raise HTTPException(status_code=400, detail="Invalid phone number")
+
         # Enforce subscription plan message limits
         from plan_enforcement import enforce_message_limit
         await enforce_message_limit(db, business_id, 1)
-        
+
         from image_handler import ImageUploadHandler
         
         # Determine media type from file extension/content type
@@ -10105,21 +10131,25 @@ async def send_whatsapp_media(
 @api_router.post("/messages/send")
 async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, user = Depends(get_current_user)):
     """
-    Send WhatsApp message to a customer via Evolution API.
+    Send WhatsApp message to a customer via WAHA.
     Auto-creates contact if number doesn't exist. Enforces rate limits.
     Auto-assigns conversation to employee on first reply if unassigned.
     """
     try:
         business_id = user.get("business_id", user["_id"])
-        
+
+        to_number = sanitize_phone(to_number)
+        if not to_number or len(to_number) < 6 or len(to_number) > 15:
+            raise HTTPException(status_code=400, detail="Invalid phone number")
+
         # Enforce subscription plan message limits
         from plan_enforcement import enforce_message_limit
         await enforce_message_limit(db, business_id, 1)
-        
+
         # Find customer to check assignment
         customer = await db.customers.find_one({
             "user_id": business_id,
-            "phone_number": to_number
+            **_phone_match_clause(to_number)
         })
         
         # Auto-assign on first reply if unassigned
@@ -10501,7 +10531,7 @@ async def evolution_webhook(request: Request):
                     f"from_me={data.get('fromMe')})"
                 )
                 return {"status": "ok"}
-            
+        
             # === DEDUPLICATION GUARD ===
             # Redis SET NX is atomic — safe across multiple server instances.
             # Falls back to asyncio lock + in-memory dict when Redis is unavailable.
@@ -10528,7 +10558,7 @@ async def evolution_webhook(request: Request):
             # === END DEDUPLICATION GUARD ===
 
             log_trace(f"Parsed body: {parsed.get('body')}")
-            
+        
             user = parsed["user"]
             from_number = parsed["from_number"]
             body = parsed["body"]
@@ -10548,20 +10578,32 @@ async def evolution_webhook(request: Request):
                     asyncio.create_task(
                         whatsapp_service.mark_as_read(_inst, _remote_jid, _evo_msg_id)
                     )
-            
+        
             # Find or create customer (the contact on the other end)
+            remote_jid_val = parsed.get("remote_jid", "")
+            customer_name = push_name or f"Contact {from_number[-4:]}"
             customer = await db.customers.find_one({
                 "user_id": user["_id"],
-                "phone_number": from_number
+                **_phone_match_clause(from_number)
             })
-            
-            customer_id = None
-            customer_name = push_name or f"Contact {from_number[-4:]}"
-            
+
+            # If the incoming JID is a LID, a previous webhook may have created
+            # the customer with the fabricated LID as phone_number. Try to find
+            # that record by LID and fix the phone number now that we know it.
+            if not customer and remote_jid_val and "@lid" in remote_jid_val:
+                customer = await db.customers.find_one({
+                    "user_id": user["_id"],
+                    "lid_jid": remote_jid_val,
+                })
+                if customer:
+                    await db.customers.update_one(
+                        {"_id": customer["_id"]},
+                        {"$set": {"phone_number": from_number}}
+                    )
+
             if customer:
                 customer_id = customer["_id"]
                 customer_name = customer.get("name", customer_name)
-                remote_jid_val = parsed.get("remote_jid", "")
                 lid_update = {}
                 # LIDs are WhatsApp's current, opaque identities. Keep the
                 # latest one so replies use the exact chat that sent us the
