@@ -863,14 +863,16 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                         if pic:
                             return pic
                     else:
-                        logger.debug(
-                            "[waha.fetch_profile_picture] non-200 %s for %s: %s",
+                        logger.warning(
+                            "[waha.fetch_profile_picture] non-200 %s for %s (session=%s base=%s): %s",
                             response.status_code,
                             contact_id,
+                            session,
+                            base_url,
                             response.text[:200],
                         )
         except Exception as exc:
-            logger.debug("[waha.fetch_profile_picture] %s", exc)
+            logger.warning("[waha.fetch_profile_picture] exception: %s", exc)
         return None
 
     async def fetch_profile_pictures_bulk(self, user_id: str) -> dict:
