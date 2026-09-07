@@ -343,6 +343,26 @@ export default function SubscriptionModal({
     try {
       setPurchasing(true);
       const Purchases = require('react-native-purchases').default;
+      // Name the SDK as this Zilo user before restoring. The SDK starts
+      // anonymous, and restoring while it still is attaches the subscription to
+      // an anonymous id: RevenueCat then reports that id, it matches no
+      // account, and the payment is recorded against nobody. There is already
+      // a live subscription on this project sitting under an $RCAnonymousID
+      // for exactly that reason.
+      if (!user?.id) {
+        Alert.alert('Sign in required', 'Please sign in again before restoring.');
+        return;
+      }
+      if ((await Purchases.getAppUserID()) !== user.id) {
+        await Purchases.logIn(user.id);
+        if ((await Purchases.getAppUserID()) !== user.id) {
+          Alert.alert(
+            'Could not restore',
+            'Zilo could not link this purchase to your account. Please check your connection and try again.',
+          );
+          return;
+        }
+      }
       const customerInfo = await Purchases.restorePurchases();
 
       if (customerInfo.entitlements.active['premium']) {

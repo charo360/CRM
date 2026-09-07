@@ -8807,7 +8807,25 @@ async def revenuecat_subscription_webhook(request: Request):
     )
 
     if not user:
-        logging.warning("RevenueCat webhook has no matching Zilo user: %s", event.get("app_user_id"))
+        # Money may have changed hands with nothing to apply it to. The event is
+        # kept above, so this is recoverable — but only if someone knows to look,
+        # and a warning among ordinary traffic is not that. Report a paid event
+        # at error level so it surfaces, and say plainly what it means.
+        paid_event = event_type in (
+            "INITIAL_PURCHASE", "RENEWAL", "NON_RENEWING_PURCHASE",
+            "UNCANCELLATION", "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED",
+        )
+        log = logging.error if paid_event else logging.warning
+        log(
+            "RevenueCat %s could not be matched to a Zilo account (app_user_id=%s, "
+            "product=%s). %sEvent id %s is stored in revenuecat_webhook_events "
+            "with processed_user_id=None and can be replayed once the account is known.",
+            event_type,
+            event.get("app_user_id"),
+            event.get("product_id"),
+            "A PAYMENT IS UNAPPLIED. " if paid_event else "",
+            event_record["_id"],
+        )
         return {"status": "ignored", "reason": "unknown_user"}
 
     incoming_timestamp = _revenuecat_milliseconds(event.get("event_timestamp_ms"))
