@@ -4,7 +4,9 @@ Plan ids: starter, standard (Growth), pro. Legacy alias: growth -> standard.
 """
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, TypedDict
 
@@ -320,6 +322,23 @@ def trial_provision_update(started: Optional[datetime] = None) -> Dict[str, Any]
     }
 
 
+TRIAL_GRANTS_COLLECTION = "trial_grants"
+
+
+def trial_claim_id(phone_number: object) -> Optional[str]:
+    """Identify who has used a trial, without keeping their phone number.
+
+    The claim has to outlive the account or deleting it would hand out another
+    free trial. Storing the number itself would mean deletion did not really
+    delete, so keep only a hash: enough to recognise a repeat claim, useless
+    for anything else.
+    """
+    digits = re.sub(r"\D", "", str(phone_number or ""))
+    if len(digits) < 6:
+        return None
+    return hashlib.sha256(digits.encode("utf-8")).hexdigest()
+
+
 async def provision_signup_trial(db, owner_id: str) -> bool:
     """Start the one-time product trial for a new account. Returns True if applied."""
     record = await db.users.find_one({"_id": owner_id})
@@ -327,7 +346,24 @@ async def provision_signup_trial(db, owner_id: str) -> bool:
         return False
     if paid_subscription_active(record):
         return False
+
+    # The per-account flag above cannot see a trial used by an account that has
+    # since been deleted, so deleting and signing up again minted a fresh
+    # fourteen days every time - and now that the trial also connects WhatsApp,
+    # that is a free session for anyone willing to tap twice.
+    claim = trial_claim_id(record.get("phone_number"))
+    if claim:
+        prior = await db[TRIAL_GRANTS_COLLECTION].find_one({"_id": claim})
+        if prior:
+            return False
+
     await db.users.update_one({"_id": owner_id}, {"$set": trial_provision_update()})
+    if claim:
+        await db[TRIAL_GRANTS_COLLECTION].update_one(
+            {"_id": claim},
+            {"$set": {"granted_at": datetime.utcnow(), "last_owner_id": owner_id}},
+            upsert=True,
+        )
     return True
 
 

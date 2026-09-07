@@ -13,29 +13,44 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from entitlements import (  # noqa: E402
     TRIAL_DAYS,
+    TRIAL_GRANTS_COLLECTION,
     has_dashboard_access,
     provision_signup_trial,
+    trial_claim_id,
     trial_window,
 )
 
 
-class FakeUsers:
-    def __init__(self, rows):
-        self.rows = {r["_id"]: dict(r) for r in rows}
+class FakeCollection:
+    def __init__(self, rows=None):
+        self.rows = {r["_id"]: dict(r) for r in (rows or [])}
 
     async def find_one(self, query, projection=None):
         row = self.rows.get(query.get("_id"))
         return dict(row) if row else None
 
-    async def update_one(self, query, operation):
-        row = self.rows.get(query.get("_id"))
-        if row:
-            row.update(operation.get("$set") or {})
+    async def update_one(self, query, operation, upsert=False):
+        key = query.get("_id")
+        row = self.rows.get(key)
+        if row is None:
+            if not upsert:
+                return
+            row = self.rows[key] = {"_id": key}
+        row.update(operation.get("$set") or {})
+
+    async def delete_one(self, query):
+        self.rows.pop(query.get("_id"), None)
 
 
 class FakeDb:
     def __init__(self, users):
-        self.users = FakeUsers(users)
+        self.users = FakeCollection(users)
+        self._extra = {}
+
+    def __getitem__(self, name):
+        if name == "users":
+            return self.users
+        return self._extra.setdefault(name, FakeCollection())
 
 
 def test_a_brand_new_account_is_locked_out_without_a_trial():
@@ -112,3 +127,66 @@ def test_whatsapp_closes_again_when_the_trial_runs_out():
         "subscription_active": False,
     }
     assert has_dashboard_access(expired) is False
+
+
+# ── One trial per person, not per account ──────────────────────────────────
+
+PHONE = "+16505553434"
+
+
+def test_deleting_and_signing_up_again_does_not_mint_a_second_trial():
+    """The abuse path: the per-account flag dies with the account.
+
+    Now that a trial also connects WhatsApp, a free re-registration would be a
+    free WAHA session for anyone willing to tap twice.
+    """
+    db = FakeDb([{"_id": "first", "phone_number": PHONE}])
+    assert asyncio.run(provision_signup_trial(db, "first")) is True
+
+    # The account is deleted and the same person signs up again: new id, same
+    # phone, no trace on the new record.
+    db.users.rows.pop("first")
+    db.users.rows["second"] = {"_id": "second", "phone_number": PHONE}
+
+    assert asyncio.run(provision_signup_trial(db, "second")) is False
+    assert "trial_started_at" not in db.users.rows["second"]
+
+
+def test_the_claim_survives_deletion_of_everything_else():
+    db = FakeDb([{"_id": "u1", "phone_number": PHONE}])
+    asyncio.run(provision_signup_trial(db, "u1"))
+    # Account deletion clears user data; the claim is deliberately not part of it.
+    db.users.rows.clear()
+    assert len(db[TRIAL_GRANTS_COLLECTION].rows) == 1
+
+
+def test_the_claim_does_not_store_the_phone_number():
+    """Deletion has to really delete, so the claim keeps only a hash."""
+    db = FakeDb([{"_id": "u1", "phone_number": PHONE}])
+    asyncio.run(provision_signup_trial(db, "u1"))
+
+    stored = str(db[TRIAL_GRANTS_COLLECTION].rows)
+    assert PHONE not in stored
+    assert "6505553434" not in stored
+
+
+def test_the_same_number_written_differently_is_the_same_person():
+    assert trial_claim_id("+1 650-555-3434") == trial_claim_id("16505553434")
+    assert trial_claim_id("+16505553434") == trial_claim_id("1 (650) 555 3434")
+    assert trial_claim_id("+16505553434") != trial_claim_id("+16505553435")
+
+
+def test_a_different_person_still_gets_their_trial():
+    db = FakeDb([
+        {"_id": "u1", "phone_number": PHONE},
+        {"_id": "u2", "phone_number": "+254712345678"},
+    ])
+    assert asyncio.run(provision_signup_trial(db, "u1")) is True
+    assert asyncio.run(provision_signup_trial(db, "u2")) is True
+
+
+def test_an_account_with_no_usable_number_is_not_refused():
+    """A missing number must not cost someone their trial."""
+    db = FakeDb([{"_id": "u1", "phone_number": ""}])
+    assert asyncio.run(provision_signup_trial(db, "u1")) is True
+    assert db[TRIAL_GRANTS_COLLECTION].rows == {}
