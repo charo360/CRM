@@ -558,6 +558,11 @@ export default function AccountScreen() {
                   } catch (logoutError) {
                     console.warn('Signed out locally after deletion failed:', logoutError);
                   }
+                  // Nothing redirects on its own: routing happens once at app
+                  // start, so clearing the session left the deleted account's
+                  // screens on display until the app was force-closed. Leave
+                  // deliberately, whether or not the local sign-out succeeded.
+                  router.replace('/(auth)/login');
                 },
               },
             ],
