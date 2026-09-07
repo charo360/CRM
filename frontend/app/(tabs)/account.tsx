@@ -187,7 +187,7 @@ export default function AccountScreen() {
       if (merged) extra.push(`${merged} duplicate contact${merged === 1 ? '' : 's'} merged.`);
       if (hidden) {
         extra.push(
-          `${hidden} contact${hidden === 1 ? '' : 's'} still without a number — WhatsApp has not shared it yet.`,
+          `${hidden} contact${hidden === 1 ? '' : 's'} still without a number — we could not resolve it. Syncing again later may find it.`,
         );
       }
       Alert.alert(

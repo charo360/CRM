@@ -283,7 +283,7 @@ def test_engine_that_ignores_offset_does_not_spin():
 
 
 def test_lid_contact_without_a_number_is_kept_not_dropped():
-    """WhatsApp withholds some numbers; the contact must still import."""
+    """An unresolved number must not lose the contact entirely."""
     db = FakeDb(users=[USER])
     routes = {
         "/lids": lambda p: [],
@@ -855,3 +855,31 @@ def test_whatsapp_correcting_the_number_is_applied():
     saved = db.customers.rows[0]
     assert saved["phone_number"] == "254712345678"
     assert "phone_number_unavailable" not in saved
+
+
+def test_contacts_endpoint_answers_when_the_lids_endpoint_will_not():
+    """A source that is sometimes right beats calling the number unknowable.
+
+    This endpoint used to be skipped entirely because it can echo the LID.
+    Rejecting echoes makes it safe to ask.
+    """
+    db = FakeDb(users=[USER])
+    routes = {
+        "/lids/": lambda p: {"lid": "99887766554433@lid", "pn": None},
+        "/api/contacts": lambda p: {"id": "99887766554433@lid",
+                                    "number": "254712345678"},
+    }
+    phone, _ = run(db, routes, lambda s: s._resolve_lid_phone("biz-1", "99887766554433@lid"))
+    assert phone == "254712345678"
+
+
+def test_contacts_endpoint_echoing_the_lid_is_still_rejected():
+    db = FakeDb(users=[USER])
+    routes = {
+        "/lids/": lambda p: {"lid": "99887766554433@lid", "pn": None},
+        # The exact failure mode that made this endpoint untrusted.
+        "/api/contacts": lambda p: {"id": "99887766554433@lid",
+                                    "number": "99887766554433"},
+    }
+    phone, _ = run(db, routes, lambda s: s._resolve_lid_phone("biz-1", "99887766554433@lid"))
+    assert phone is None

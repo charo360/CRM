@@ -1076,7 +1076,7 @@ export default function CustomersScreen() {
         </View>
         <View style={styles.chatRowBottom}>
           <Text style={styles.chatRowMessage} numberOfLines={1}>
-            {item.last_message || item.notes || item.phone_number || 'Number hidden by WhatsApp'}
+            {item.last_message || item.notes || item.phone_number || 'No number yet'}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             {/* Only show assignment badges for teams (1+ members) */}
@@ -1492,7 +1492,7 @@ export default function CustomersScreen() {
                           </View>
                         )}
                       </View>
-                      <Text style={styles.contactPhone}>{item.phone_number || 'Number hidden by WhatsApp'}</Text>
+                      <Text style={styles.contactPhone}>{item.phone_number || 'No number yet'}</Text>
                       {item.suggestion_reason ? <Text numberOfLines={1} style={{ color: '#8899AA', fontSize: 11, marginTop: 1 }}>{item.suggestion_reason}</Text> : null}
                       {item.suggested_type && (
                         <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>

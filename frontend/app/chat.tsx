@@ -52,7 +52,7 @@ export default function ChatScreen() {
   const customerName = params.customerName || 'Customer';
   const customerPhone = params.customerPhone || '';
   const customerLid = params.customerLid || '';
-  const visiblePhone = customerPhone || 'Phone number hidden by WhatsApp';
+  const visiblePhone = customerPhone || 'No number yet';
   // WhatsApp withholds some contacts' numbers. Their LID is the only way to
   // reach the chat, so send to that rather than to an empty phone number.
   const sendTarget = customerPhone || customerLid;

@@ -413,10 +413,13 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         """Resolve a WhatsApp LID JID to the underlying phone number via WAHA.
 
         When a modern WhatsApp account uses a linked-identity (LID) chat,
-        the JID contains an opaque ID rather than the real phone number. Do
-        not use the generic contacts endpoint here: for a LID it can return
-        the LID itself in ``number``. WAHA's dedicated lids endpoint returns
-        ``pn`` only when WhatsApp has actually exposed a phone number.
+        the JID contains an opaque ID rather than the real phone number.
+
+        Two sources are tried. The dedicated lids endpoint is asked first, then
+        the generic contacts endpoint. The latter used to be avoided because it
+        can hand back the LID itself as the number - but that is now rejected
+        wherever a number is resolved, so a source that is sometimes right is
+        worth asking rather than treating every unanswered LID as unknowable.
         """
         now = datetime.utcnow().timestamp()
         cache_entry = self._lid_phone_cache.get(remote_jid)
@@ -441,6 +444,21 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                     if phone:
                         self._lid_phone_cache[remote_jid] = (phone, now + 600)
                         return phone
+
+                # Second source: the contact record itself. An echo of the LID
+                # is discarded, so the worst case is no answer.
+                contact = await client.get(
+                    f"{base_url}/api/contacts",
+                    headers=self._headers(),
+                    params={"contactId": remote_jid, "session": session},
+                )
+                if contact.status_code == 200:
+                    record = contact.json() or {}
+                    for field in ("pn", "number", "id"):
+                        phone = _resolved_phone(record.get(field), remote_jid)
+                        if phone:
+                            self._lid_phone_cache[remote_jid] = (phone, now + 600)
+                            return phone
         except Exception as exc:
             logger.debug("[waha._resolve_lid_phone] %s", exc)
         self._lid_phone_cache[remote_jid] = (None, now + 60)
@@ -597,8 +615,9 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
 
         Older webhook handling could save the digits from ``123@lid`` into
         ``phone_number``. Repair only records that are tied to a LID message;
-        WhatsApp intentionally withholds some mappings, so guessing a number
-        would be worse than showing no number.
+        A mapping we cannot obtain is not proof the number is secret - only
+        that this route did not answer. Either way, guessing a number would be
+        worse than showing none.
         """
         # Prime the LID cache in bulk; otherwise every contact below costs its
         # own round trip and the repair stalls on a large address book.
@@ -1230,8 +1249,8 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             phone = _digits(_jid_to_phone(chat_id))
         if not _is_phone_like(phone or ""):
             phone = None
-        # A LID chat still has a contact even when WhatsApp withholds the
-        # number, so look it up by LID before giving up on the history.
+        # A LID chat still has a contact even when the number is unresolved,
+        # so look it up by LID before giving up on the history.
         customer = None
         if is_lid:
             customer = await self.db.customers.find_one({"user_id": user_id, "lid_jid": chat_id})
@@ -1340,7 +1359,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         """Import one contact's history from whichever chat WhatsApp actually uses.
 
         Building ``_chat_id(phone)`` unconditionally produced a bare ``@c.us``
-        for a contact whose number WhatsApp withholds, which fetched nothing.
+        for a contact whose number is unresolved, which fetched nothing.
         Try the contact's real LID chat first and fall back to the phone JID.
         """
         session, _ = await self._session_and_node(user_id)

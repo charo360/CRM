@@ -35,7 +35,7 @@ export default function CustomerProfileScreen() {
   const customerId = params.customerId || '';
   const initialName = params.customerName || '';
   const customerPhone = params.customerPhone || '';
-  const visiblePhone = customerPhone || 'Phone number hidden by WhatsApp';
+  const visiblePhone = customerPhone || 'No number yet';
 
   const { isServiceBusiness, businessType: bizType } = useBusiness();
   const [name, setName] = useState(initialName);

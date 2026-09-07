@@ -387,9 +387,10 @@ CONTACT_SYNC_VERSION = 2
 def _is_lid_destination(value: object) -> bool:
     """Return whether a send target is WhatsApp's opaque LID chat id.
 
-    WhatsApp withholds the phone number behind some chats. The LID is then the
-    only way to reach the contact, so it must survive phone sanitisation
-    instead of being rejected as an invalid number.
+    Some chats are known to us only by their LID, either because resolution
+    has not succeeded yet or because WhatsApp has not exposed the number. The
+    LID is then the only way to reach the contact, so it must survive phone
+    sanitisation instead of being rejected as an invalid number.
     """
     return bool(_re.fullmatch(r"[0-9]+@lid", str(value or "").strip()))
 
@@ -418,7 +419,7 @@ def _display_contact_number(value: object) -> str:
     """Render a contact's number for a person, never exposing an internal LID."""
     text = str(value or "").strip()
     if not text or _is_lid_destination(text):
-        return "Number hidden by WhatsApp"
+        return "No number yet"
     return text
 
 
@@ -1354,8 +1355,8 @@ class CustomerResponse(BaseModel):
     last_contacted: Optional[datetime] = None
     profile_picture: Optional[str] = None
     # WhatsApp's opaque chat id, present when the contact reached us through a
-    # LID chat. It is the only way to message a contact whose number WhatsApp
-    # withholds, so the app needs it alongside the (possibly blank) number.
+    # LID chat. It is the only way to message a contact whose number we have not
+    # resolved, so the app needs it alongside the (possibly blank) number.
     lid_jid: Optional[str] = None
     phone_number_unavailable: bool = False
     unread_count: int = 0
