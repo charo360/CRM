@@ -54,6 +54,14 @@ interface DashboardSummary {
   total_customers: number;
 }
 
+type ContactSort = 'suggested' | 'recent' | 'name';
+
+const CONTACT_SORTS: { key: ContactSort; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: 'suggested', label: 'Suggested', icon: 'sparkles-outline' },
+  { key: 'recent', label: 'Recent', icon: 'time-outline' },
+  { key: 'name', label: 'A–Z', icon: 'text-outline' },
+];
+
 const STAGES = ['all', 'lead', 'contacted', 'negotiating', 'won', 'lost'] as const;
 const STAGE_COLORS: Record<string, string> = {
   lead: '#8696A0',
@@ -135,6 +143,11 @@ export default function CustomersScreen() {
   const [allContacts, setAllContacts] = useState<any[]>([]);
   const [loadingContacts2, setLoadingContacts2] = useState(false);
   const [contactSearch2, setContactSearch2] = useState('');
+  const [contactSort, setContactSort] = useState<ContactSort>('suggested');
+  // Read through a ref so the fetcher keeps its stable identity; the polling
+  // effect below re-runs on it and would otherwise restart on every change.
+  const contactSortRef = useRef<ContactSort>('suggested');
+  contactSortRef.current = contactSort;
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [supplierCategories, setSupplierCategories] = useState<string[]>([]);
   const [selectedSupplierCategory, setSelectedSupplierCategory] = useState<string | null>(null);
@@ -274,11 +287,13 @@ export default function CustomersScreen() {
     }
   };
 
-  const fetchAllContacts = useCallback(async (search?: string, silent = false) => {
+  const fetchAllContacts = useCallback(async (search?: string, silent = false, sort?: ContactSort) => {
     if (!silent) setLoadingContacts2(true);
     try {
-      const q = search ? `?search=${encodeURIComponent(search)}` : '';
-      const res = await apiClient.get(`/contacts${q}`);
+      const params = new URLSearchParams();
+      if (search) params.set('search', search);
+      params.set('sort_by', sort ?? contactSortRef.current);
+      const res = await apiClient.get(`/contacts?${params.toString()}`);
       const newData = res.data;
       if (silent) {
         setAllContacts(prev => {
@@ -1413,6 +1428,26 @@ export default function CustomersScreen() {
               {scanningContacts ? <ActivityIndicator size="small" color="#FFD700" /> : <Ionicons name="sparkles-outline" size={20} color="#FFD700" />}
             </TouchableOpacity>
           </View>
+
+          {/* Sorting Toggle */}
+          <View style={styles.sortContainer}>
+            {CONTACT_SORTS.map(({ key, label, icon }) => (
+              <TouchableOpacity
+                key={key}
+                style={[styles.sortButton, contactSort === key && styles.sortButtonActive]}
+                onPress={() => {
+                  setContactSort(key);
+                  fetchAllContacts(contactSearch2, false, key);
+                }}
+              >
+                <Ionicons name={icon} size={16} color={contactSort === key ? '#FFFFFF' : '#666'} />
+                <Text style={[styles.sortText, contactSort === key && styles.sortTextActive]}>
+                  {label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           {loadingContacts2 ? (
             <View style={styles.loadingContainer}>
               <ActivityIndicator size="large" color="#25D366" />

@@ -394,6 +394,26 @@ def _is_lid_destination(value: object) -> bool:
     return bool(_re.fullmatch(r"[0-9]+@lid", str(value or "").strip()))
 
 
+def _contact_name_key(contact: dict) -> tuple:
+    """A-Z, with symbols and numbers after letters rather than before."""
+    name = (contact.get("name") or "").strip()
+    first = name[0].upper() if name else ""
+    return (0 if first.isalpha() else 1, name.lower())
+
+
+def _contact_activity_key(contact: dict) -> datetime:
+    """Most recent contact first, falling back to when it was added.
+
+    A contact nobody has spoken to yet still lands somewhere sensible instead
+    of every one of them piling up together at one end of the list.
+    """
+    for field in ("last_contacted", "created_at"):
+        value = contact.get(field)
+        if isinstance(value, datetime):
+            return value
+    return datetime.min
+
+
 def _display_contact_number(value: object) -> str:
     """Render a contact's number for a person, never exposing an internal LID."""
     text = str(value or "").strip()
@@ -4620,7 +4640,11 @@ async def create_contact_as_customer_endpoint(contact: ContactCreate, user = Dep
     )
 
 @api_router.get("/contacts")
-async def get_contacts(search: str = "", user = Depends(get_current_user)):
+async def get_contacts(
+    search: str = "",
+    sort_by: str = "suggested",
+    user = Depends(get_current_user),
+):
     """Return all WhatsApp-synced contacts that are NOT yet customers."""
     business_id = user.get("business_id", user["_id"])
     asyncio.create_task(_repair_lids_in_background(business_id))
@@ -4642,14 +4666,15 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
     }).to_list(2000)
     pending_map = {p["customer_id"]: p for p in pending_list}
 
-    # Sort: suggested contacts first, then A-Z, symbols/numbers last
-    def _sort_key(c):
-        has_suggestion = c["_id"] in pending_map
-        name = (c.get("name") or "").strip()
-        first = name[0].upper() if name else ""
-        is_letter = first.isalpha()
-        return (0 if has_suggestion else 1, 0 if is_letter else 1, name.lower())
-    contacts.sort(key=_sort_key)
+    if sort_by == "recent":
+        contacts.sort(key=_contact_activity_key, reverse=True)
+    elif sort_by == "name":
+        contacts.sort(key=_contact_name_key)
+    else:
+        # Default: whatever the AI flagged for review first, then A-Z.
+        contacts.sort(
+            key=lambda c: ((0 if c["_id"] in pending_map else 1),) + _contact_name_key(c)
+        )
 
     result = []
     for c in contacts:
