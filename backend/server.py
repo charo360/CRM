@@ -9454,13 +9454,14 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     entitlements = await build_entitlements(db, user)
-    # An active free trial links WhatsApp just as a paid plan does. Requiring a
-    # card first meant the trial unlocked a CRM with no WhatsApp in it, which is
-    # the one thing the product is for.
-    if not entitlements.get("dashboard_access"):
+    # Linking a number costs a real WhatsApp session for as long as it is
+    # connected, so it is deliberately gated on a verified payment method
+    # rather than on the free trial. Google Play still charges nothing up
+    # front; it just establishes that someone means it.
+    if not entitlements.get("paid_active"):
         raise HTTPException(
             status_code=402,
-            detail="Your free trial has ended. Subscribe to keep WhatsApp connected.",
+            detail="Verify a payment method in Google Play to connect WhatsApp. Your free trial starts once it is verified, and you are not charged today.",
         )
 
     cfg_err = evolution_config_error()
@@ -9500,8 +9501,8 @@ async def whatsapp_refresh_pairing_code(request: Request, user = Depends(get_cur
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     entitlements = await build_entitlements(db, user)
-    if not entitlements.get("dashboard_access"):
-        raise HTTPException(status_code=402, detail="Your free trial has ended. Subscribe to keep WhatsApp connected.")
+    if not entitlements.get("paid_active"):
+        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.")
 
     if cfg_err := evolution_config_error():
         raise HTTPException(status_code=503, detail=cfg_err)
@@ -9529,8 +9530,8 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     entitlements = await build_entitlements(db, user)
-    if not entitlements.get("dashboard_access"):
-        raise HTTPException(status_code=402, detail="Your free trial has ended. Subscribe to keep WhatsApp connected.")
+    if not entitlements.get("paid_active"):
+        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.")
 
     cfg_err = evolution_config_error()
     if cfg_err:

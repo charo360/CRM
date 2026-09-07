@@ -370,26 +370,15 @@ export default function AccountScreen() {
       // stale account flag is never mistaken for a real one. An active free
       // trial counts: asking for a card first meant the trial unlocked a CRM
       // with no WhatsApp in it, which is the one thing it is for.
+      // Linking a number costs a real WhatsApp session for as long as it stays
+      // connected, so this is gated on a verified payment method rather than on
+      // the free trial. Read the live entitlement so a stale account flag is
+      // never mistaken for a verified card.
       const statusResponse = await apiClient.get('/subscription/status');
       const paid = Boolean(statusResponse.data?.paid_active);
-      let entitled = paid || Boolean(statusResponse.data?.dashboard_access);
       setPaidSubscriptionActive(paid);
 
-      if (!entitled) {
-        // Before asking anyone for a card, start the free trial they are
-        // entitled to. Accounts created before the trial existed have never
-        // had one, and the endpoint has always been able to grant it — the app
-        // simply never asked, and sent people to Google Play instead.
-        try {
-          await apiClient.post('/subscription/start-trial');
-          entitled = true;
-        } catch (trialError: any) {
-          // Already used, or already subscribed: fall through to the paid flow.
-          console.log('Free trial unavailable:', trialError?.response?.data?.detail);
-        }
-      }
-
-      if (!entitled) {
+      if (!paid) {
         showWhatsAppTrial();
         return;
       }

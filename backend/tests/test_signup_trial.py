@@ -15,6 +15,7 @@ from entitlements import (  # noqa: E402
     TRIAL_DAYS,
     TRIAL_GRANTS_COLLECTION,
     has_dashboard_access,
+    paid_subscription_active,
     provision_signup_trial,
     trial_claim_id,
     trial_window,
@@ -100,11 +101,13 @@ def test_an_expired_trial_no_longer_grants_access():
     assert has_dashboard_access(record) is False
 
 
-def test_a_trial_is_enough_to_connect_whatsapp():
-    """The WhatsApp gates check dashboard_access, not paid_active.
+def test_the_trial_opens_the_crm_but_not_whatsapp():
+    """Two different gates, deliberately.
 
-    Requiring a card first meant a trial unlocked a CRM with no WhatsApp in
-    it - the one thing the product is for.
+    The dashboard is free during the trial. Linking a number is not: it costs a
+    real WhatsApp session for as long as it stays connected, so it is gated on
+    a verified payment method - which also keeps idle sign-ups from holding
+    sessions open.
     """
     started = datetime.utcnow()
     trial_only = {
@@ -114,11 +117,21 @@ def test_a_trial_is_enough_to_connect_whatsapp():
         "subscription_active": False,
         "subscription_plan": "trial",
     }
-    assert has_dashboard_access(trial_only) is True
+    assert has_dashboard_access(trial_only) is True       # the CRM opens
+    assert paid_subscription_active(trial_only) is False  # WhatsApp does not
 
 
-def test_whatsapp_closes_again_when_the_trial_runs_out():
-    """Access has to end, or the gate is not a gate."""
+def test_a_verified_card_opens_whatsapp():
+    """Google Play verifies the card and charges nothing today."""
+    paid = {
+        "_id": "u1",
+        "subscription_active": True,
+        "subscription_plan": "starter",
+    }
+    assert paid_subscription_active(paid) is True
+
+
+def test_the_crm_closes_when_the_trial_runs_out():
     past = datetime.utcnow() - timedelta(days=TRIAL_DAYS + 1)
     expired = {
         "_id": "u1",
