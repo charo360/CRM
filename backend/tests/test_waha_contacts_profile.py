@@ -69,6 +69,48 @@ class FakeCollection:
     async def insert_one(self, document):
         self.rows.append(dict(document))
 
+    def aggregate(self, pipeline):
+        """Support the $match + $group shape the repair pass uses."""
+        rows = [dict(r) for r in self.rows]
+        grouped = None
+        for stage in pipeline:
+            if "$match" in stage:
+                match = stage["$match"]
+                kept = []
+                for row in rows:
+                    ok = True
+                    for key, expected in match.items():
+                        value = row.get(key)
+                        if isinstance(expected, dict) and "$regex" in expected:
+                            import re as _re
+                            if not (value and _re.search(expected["$regex"], str(value))):
+                                ok = False
+                        elif value != expected:
+                            ok = False
+                    if ok:
+                        kept.append(row)
+                rows = kept
+            elif "$group" in stage:
+                spec = stage["$group"]["_id"]
+                seen = {}
+                for row in rows:
+                    key = tuple(
+                        (name, row.get(str(src).lstrip("$")))
+                        for name, src in spec.items()
+                    )
+                    seen[key] = {"_id": {name: value for name, value in key}}
+                grouped = list(seen.values())
+                rows = grouped
+
+        class _Cursor:
+            def __aiter__(self):
+                async def gen():
+                    for row in rows:
+                        yield row
+                return gen()
+
+        return _Cursor()
+
     @staticmethod
     def _set_path(row, key, value):
         """Apply a dotted key the way Mongo does, creating parents as needed."""
@@ -416,10 +458,16 @@ def test_outgoing_message_takes_the_recipient_not_our_own_number():
     assert _payload_phone(payload, from_me=True, own_number="254799999999") == "254712345678"
 
 
-def test_owner_number_is_never_returned_as_the_contact():
+def test_owner_number_is_only_used_when_it_is_the_only_party():
+    """A payload naming just the owner is the self-chat, so keep that number.
+
+    The guard exists to stop an outgoing message filing our number against a
+    customer - not to blank the one number we are certain of. The stronger
+    invariant is covered by the test below: a real contact always wins.
+    """
     from waha_service import _payload_phone
     payload = {"_data": {"Info": {"SenderAlt": "254799999999@s.whatsapp.net"}}}
-    assert _payload_phone(payload, from_me=False, own_number="+254799999999") is None
+    assert _payload_phone(payload, from_me=False, own_number="+254799999999") == "254799999999"
 
 
 def test_group_participant_pn_is_accepted():
@@ -442,3 +490,62 @@ def test_payload_lookup_is_case_insensitive_across_engines():
     from waha_service import _payload_phone
     payload = {"_data": {"info": {"senderalt": "254712345678@s.whatsapp.net"}}}
     assert _payload_phone(payload, from_me=False, own_number="") == "254712345678"
+
+
+def test_self_chat_keeps_the_owners_own_number():
+    """The chat a business has with itself must not be blanked.
+
+    Skipping the owner's number is there to stop an outgoing message filing
+    our number as the customer's - but when every identity in the payload is
+    the owner, the contact really is the owner.
+    """
+    from waha_service import _payload_phone
+    payload = {
+        "chatId": "13444002652393@lid",
+        "fromMe": True,
+        "_data": {"Info": {
+            "SenderAlt": "12026995029@s.whatsapp.net",
+            "RecipientAlt": "12026995029@s.whatsapp.net",
+        }},
+    }
+    assert _payload_phone(payload, from_me=True, own_number="12026995029") == "12026995029"
+
+
+def test_a_real_contact_still_wins_over_the_owners_number():
+    """The fallback must not weaken the outgoing-message protection."""
+    from waha_service import _payload_phone
+    payload = {
+        "fromMe": True,
+        "_data": {"Info": {
+            "SenderAlt": "12026995029@s.whatsapp.net",     # us
+            "RecipientAlt": "254712345678@s.whatsapp.net",  # the customer
+        }},
+    }
+    assert _payload_phone(payload, from_me=True, own_number="12026995029") == "254712345678"
+
+
+def test_repair_recovers_a_number_the_lids_endpoint_will_not_give():
+    """The endpoint returns null, but the chat's messages carry the answer."""
+    customer = {
+        "_id": "cust-1", "user_id": "biz-1", "name": "Contact 6293",
+        "phone_number": "", "lid_jid": "178752445276293@lid",
+        "phone_number_unavailable": True,
+    }
+    message = {
+        "_id": "m1", "user_id": "biz-1", "customer_id": "cust-1",
+        "remote_jid": "178752445276293@lid",
+    }
+    db = FakeDb(users=[USER], customers=[customer], messages=[message])
+    routes = {
+        "/lids": lambda p: FakeResponse({"lid": "178752445276293@lid", "pn": None}),
+        "/messages": lambda p: [
+            {"id": "x1", "fromMe": False,
+             "_data": {"Info": {"SenderAlt": "254712345678@s.whatsapp.net"}}},
+        ],
+    }
+    result, _ = run(db, routes, lambda s: s.repair_lid_contacts("biz-1"))
+
+    assert result["repaired"] == 1, result
+    saved = db.customers.rows[0]
+    assert saved["phone_number"] == "254712345678"
+    assert "phone_number_unavailable" not in saved

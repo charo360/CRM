@@ -171,6 +171,13 @@ def _payload_phone(data: dict, from_me: bool, own_number: str = "") -> Optional[
         phone = _phone_from_jid(candidate)
         if phone and _is_phone_like(phone) and phone != own:
             return phone
+    # Every identity in this payload is the owner's own, so this is the chat
+    # the business has with itself. Its number is then genuinely the contact's
+    # number, and blanking it would hide the one number we are certain of.
+    for candidate in candidates:
+        phone = _phone_from_jid(candidate)
+        if phone and _is_phone_like(phone):
+            return phone
     return None
 
 
@@ -419,6 +426,39 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         self._lid_phone_cache[remote_jid] = (None, now + 60)
         return None
 
+    async def _phone_from_chat_messages(
+        self, user_id: str, session: str, chat_id: str, own_number: str = "",
+    ) -> Optional[str]:
+        """Resolve a LID by reading the engine payload on its recent messages.
+
+        The ``/lids`` endpoint returns null for most contacts, but the engine
+        stamps the resolved phone JID onto each message it hands us. Reading a
+        few of a chat's messages therefore recovers numbers the dedicated
+        endpoint will not give up.
+        """
+        try:
+            _, base_url = await self._node_for_user(user_id)
+            async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
+                response = await client.get(
+                    f"{base_url}/api/{quote(session, safe='')}/chats/"
+                    f"{quote(chat_id, safe='')}/messages",
+                    headers=self._headers(),
+                    params={"limit": 20, "downloadMedia": "false"},
+                )
+            if response.status_code != 200:
+                return None
+            messages = response.json()
+            for item in messages if isinstance(messages, list) else []:
+                phone = _payload_phone(item, bool(item.get("fromMe")), own_number)
+                if phone:
+                    self._lid_phone_cache[chat_id] = (
+                        phone, datetime.utcnow().timestamp() + 600
+                    )
+                    return phone
+        except Exception as exc:
+            logger.debug("[waha._phone_from_chat_messages] %s", exc)
+        return None
+
     async def repair_lid_contacts(self, user_id: str) -> dict:
         """Repair contacts previously saved with a LID as their phone number.
 
@@ -430,6 +470,11 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         # Prime the LID cache in bulk; otherwise every contact below costs its
         # own round trip and the repair stalls on a large address book.
         await self._lid_phone_map(user_id)
+        session, _ = await self._session_and_node(user_id)
+        owner = await self.db.users.find_one(
+            {"_id": user_id}, {"whatsapp.phone_number": 1}
+        ) or {}
+        own_number = str((owner.get("whatsapp") or {}).get("phone_number") or "")
         mappings: dict[str, str] = {}
         pipeline = [
             {"$match": {"user_id": user_id, "remote_jid": {"$regex": r"^[0-9]+@lid$"}}},
@@ -448,6 +493,10 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             if not customer:
                 continue
             phone = await self._resolve_lid_phone(user_id, lid)
+            if not phone:
+                phone = await self._phone_from_chat_messages(
+                    user_id, session, lid, own_number
+                )
             if not phone:
                 if _digits(str(customer.get("phone_number") or "")) == _digits(lid):
                     await self.db.customers.update_one(
