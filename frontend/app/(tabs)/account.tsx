@@ -530,9 +530,30 @@ export default function AccountScreen() {
                 onPress: async () => {
                   try {
                     await accountAPI.deleteAccount();
+                  } catch (error: any) {
+                    // The request can fail after the server has already erased
+                    // everything, which told people their account was still
+                    // there when it was gone. Asking again settles it: the
+                    // endpoint reports success once the account no longer
+                    // exists, so only a second failure is a real one.
+                    try {
+                      await accountAPI.deleteAccount();
+                    } catch (retryError: any) {
+                      Alert.alert(
+                        'Could not delete',
+                        retryError?.response?.data?.detail ||
+                          error?.response?.data?.detail ||
+                          'Please check your connection and try again.',
+                      );
+                      return;
+                    }
+                  }
+                  // The account is gone; clearing the local session must not
+                  // be able to report the deletion as failed.
+                  try {
                     await logout();
-                  } catch {
-                    Alert.alert('Could not delete', 'Please check your connection and try again.');
+                  } catch (logoutError) {
+                    console.warn('Signed out locally after deletion failed:', logoutError);
                   }
                 },
               },

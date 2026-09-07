@@ -9272,37 +9272,38 @@ async def delete_account(request: Request):
             logging.warning(f"Account deletion: Evolution cleanup failed for {user_id}: {e}")
     asyncio.create_task(_cleanup_evolution())
 
-    # Delete all user data from every collection (user_id and business_id are the same for owners)
-    await db.customers.delete_many({"user_id": user_id})
-    await db.messages.delete_many({"user_id": user_id})
-    await db.sales.delete_many({"user_id": user_id})
-    await db.expenses.delete_many({"user_id": user_id})
-    await db.followups.delete_many({"user_id": user_id})
-    await db.orders.delete_many({"user_id": user_id})
-    await db.products.delete_many({"user_id": user_id})
-    await db.broadcasts.delete_many({"user_id": user_id})
-    await db.broadcast_templates.delete_many({"user_id": user_id})
-    await db.broadcast_automations.delete_many({"user_id": user_id})
-    await db.transactions.delete_many({"user_id": user_id})
-    await db.customer_analysis.delete_many({"user_id": user_id})
-    await db.pending_classifications.delete_many({"user_id": user_id})
-    await db.pending_catalogs.delete_many({"user_id": user_id})
-    await db.settings.delete_many({"user_id": user_id})
-    await db.bookings.delete_many({"user_id": user_id})
-    await db.customer_groups.delete_many({"user_id": user_id})
-    await db.followup_events.delete_many({"user_id": user_id})
-    await db.conversation_memory.delete_many({"user_id": user_id})
-    # Also keyed to this business's contacts; without these the account's
-    # conversation state, loyalty balances and feedback records outlive the
-    # deletion this endpoint promises.
-    await db.conversation_states.delete_many({"user_id": user_id})
-    await db.loyalty_members.delete_many({"user_id": user_id})
-    await db.loyalty_transactions.delete_many({"user_id": user_id})
-    await db.feedback_deliveries.delete_many({"user_id": user_id})
-    await db.activity_logs.delete_many({"business_id": user_id})
-    await db.conversation_assignments.delete_many({"business_id": user_id})
-    await db.team_members.delete_many({"business_id": user_id})
-    await db.wa_auth_sessions.delete_many({"user_id": user_id})
+    # Delete all user data from every collection (user_id and business_id are
+    # the same for owners). These ran one after another, so a deletion cost
+    # thirty round trips to the database and regularly outlived the request:
+    # the server finished the work while the app was told it had failed.
+    # Issued together, the whole set costs about as long as its slowest member.
+    _BY_USER_ID = (
+        "customers", "messages", "sales", "expenses", "followups", "orders",
+        "products", "broadcasts", "broadcast_templates", "broadcast_automations",
+        "transactions", "customer_analysis", "pending_classifications",
+        "pending_catalogs", "settings", "bookings", "customer_groups",
+        "followup_events", "conversation_memory",
+        # Keyed to this business's contacts; without these the account's
+        # conversation state, loyalty balances and feedback records outlive
+        # the deletion this endpoint promises.
+        "conversation_states", "loyalty_members", "loyalty_transactions",
+        "feedback_deliveries", "wa_auth_sessions",
+    )
+    _BY_BUSINESS_ID = ("activity_logs", "conversation_assignments", "team_members")
+
+    results = await asyncio.gather(
+        *(db[name].delete_many({"user_id": user_id}) for name in _BY_USER_ID),
+        *(db[name].delete_many({"business_id": user_id}) for name in _BY_BUSINESS_ID),
+        return_exceptions=True,
+    )
+    for name, outcome in zip(_BY_USER_ID + _BY_BUSINESS_ID, results):
+        if isinstance(outcome, Exception):
+            # Report the failure rather than claiming a clean deletion.
+            logging.error("Account deletion: %s not cleared for %s: %s", name, user_id, outcome)
+            raise HTTPException(
+                status_code=500,
+                detail="Some data could not be deleted. Please try again.",
+            )
 
     # Delete the user record itself
     await db.users.delete_one({"_id": user_id})
