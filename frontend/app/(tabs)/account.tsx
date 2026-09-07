@@ -62,6 +62,11 @@ interface SubscriptionStatus {
   subscription_is_trial?: boolean;
   subscription_date?: string | null;
   subscription_current_period_end?: string | null;
+  // The free trial: an entitlement with no payment behind it. Distinct from
+  // paid_active and from Google Play's own trial, which does need a card.
+  trial_active?: boolean;
+  trial_ends_at?: string | null;
+  dashboard_access?: boolean;
 }
 
 export default function AccountScreen() {
@@ -614,9 +619,21 @@ export default function AccountScreen() {
     );
   }
 
-  const isSubscriptionActive = Boolean(
+  const isPaidActive = Boolean(
     subscriptionStatus?.paid_active ?? user?.subscription_active
   );
+  // The free trial needs no card, so it is not a paid subscription — but it is
+  // an active entitlement, and the banner treated only paid as active. That is
+  // how someone on a running trial, with WhatsApp already linked, was still
+  // being told to add a payment method.
+  const isZiloTrial = Boolean(subscriptionStatus?.trial_active) && !isPaidActive;
+  const ziloTrialEndsAt = subscriptionStatus?.trial_ends_at
+    ? new Date(subscriptionStatus.trial_ends_at)
+    : null;
+  const ziloTrialDaysLeft = ziloTrialEndsAt && !Number.isNaN(ziloTrialEndsAt.getTime())
+    ? Math.max(0, Math.ceil((ziloTrialEndsAt.getTime() - Date.now()) / 86400000))
+    : null;
+  const isSubscriptionActive = isPaidActive || isZiloTrial;
   const activePlanId = String(
     subscriptionStatus?.subscription_plan || user?.subscription_plan || ''
   ).toLowerCase();
@@ -648,14 +665,22 @@ export default function AccountScreen() {
     : 'Google Play payment verified';
   const subscriptionBadgeLabel = !isSubscriptionActive
     ? 'Start 14-day trial'
-    : isGooglePlayTrial
-      ? '14-day trial active'
-      : `${activePlanName} active`;
+    : isZiloTrial
+      ? ziloTrialDaysLeft !== null
+        ? `Trial • ${ziloTrialDaysLeft} day${ziloTrialDaysLeft === 1 ? '' : 's'} left`
+        : 'Free trial active'
+      : isGooglePlayTrial
+        ? '14-day trial active'
+        : `${activePlanName} active`;
   const subscriptionDetail = !isSubscriptionActive
     ? 'Add a payment method in Google Play to start your free trial.'
-    : isGooglePlayTrial
-      ? `${renewalLabel} • Then ${activePlanName} continues unless you cancel in Google Play.`
-      : renewalLabel;
+    : isZiloTrial
+      ? ziloTrialEndsAt && !Number.isNaN(ziloTrialEndsAt.getTime())
+        ? `Free trial ends ${ziloTrialEndsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}. Subscribe any time to keep going — no card needed until then.`
+        : 'Your free trial is running. No card needed until it ends.'
+      : isGooglePlayTrial
+        ? `${renewalLabel} • Then ${activePlanName} continues unless you cancel in Google Play.`
+        : renewalLabel;
 
   return (
     <SafeAreaView style={styles.container}>
