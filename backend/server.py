@@ -379,6 +379,36 @@ def sanitize_phone(phone: str) -> str:
     return digits
 
 
+# Bumped whenever WhatsApp contact importing changes in a way that makes an
+# already-synced address book incomplete; a connection event then re-imports.
+CONTACT_SYNC_VERSION = 2
+
+
+def _is_lid_destination(value: object) -> bool:
+    """Return whether a send target is WhatsApp's opaque LID chat id.
+
+    WhatsApp withholds the phone number behind some chats. The LID is then the
+    only way to reach the contact, so it must survive phone sanitisation
+    instead of being rejected as an invalid number.
+    """
+    return bool(_re.fullmatch(r"[0-9]+@lid", str(value or "").strip()))
+
+
+def _display_contact_number(value: object) -> str:
+    """Render a contact's number for a person, never exposing an internal LID."""
+    text = str(value or "").strip()
+    if not text or _is_lid_destination(text):
+        return "Number hidden by WhatsApp"
+    return text
+
+
+def _destination_match_clause(destination: str) -> dict:
+    """Match a customer by LID chat id or by phone number, whichever we were given."""
+    if _is_lid_destination(destination):
+        return {"lid_jid": str(destination).strip()}
+    return _phone_match_clause(destination)
+
+
 def _phone_match_clause(phone: str) -> dict:
     """Match a normalized phone number whether the stored value has a leading + or not."""
     clean = sanitize_phone(phone)
@@ -1303,6 +1333,11 @@ class CustomerResponse(BaseModel):
     last_message: Optional[str] = None
     last_contacted: Optional[datetime] = None
     profile_picture: Optional[str] = None
+    # WhatsApp's opaque chat id, present when the contact reached us through a
+    # LID chat. It is the only way to message a contact whose number WhatsApp
+    # withholds, so the app needs it alongside the (possibly blank) number.
+    lid_jid: Optional[str] = None
+    phone_number_unavailable: bool = False
     unread_count: int = 0
     created_at: datetime
     assigned_to: Optional[str] = None
@@ -4623,6 +4658,8 @@ async def get_contacts(search: str = "", user = Depends(get_current_user)):
             "id": c["_id"],
             "name": c.get("name", ""),
             "phone_number": c.get("phone_number", ""),
+            "lid_jid": c.get("lid_jid"),
+            "phone_number_unavailable": bool(c.get("phone_number_unavailable")),
             "profile_picture": c.get("profile_picture"),
             "last_message": c.get("last_message", ""),
             "last_contacted": c.get("last_contacted"),
@@ -4648,6 +4685,8 @@ async def get_contact_suggestions(user = Depends(get_current_user)):
             "id": c["_id"],
             "name": c.get("name", ""),
             "phone_number": c.get("phone_number", ""),
+            "lid_jid": c.get("lid_jid"),
+            "phone_number_unavailable": bool(c.get("phone_number_unavailable")),
             "profile_picture": c.get("profile_picture"),
             "last_message": c.get("last_message", ""),
             "last_contacted": c.get("last_contacted"),
@@ -4826,6 +4865,8 @@ async def get_customers(
                     last_message=c.get("last_message"),
                     last_contacted=_parse_dt(c.get("last_contacted"), required=False),
                     profile_picture=c.get("profile_picture"),
+                    lid_jid=c.get("lid_jid"),
+                    phone_number_unavailable=bool(c.get("phone_number_unavailable")),
                     unread_count=unread_map.get(c["_id"], 0),
                     created_at=created,
                     assigned_to=assignment_map.get(c["_id"]),
@@ -9657,6 +9698,8 @@ async def whatsapp_status(user = Depends(get_current_user)):
         "connected": status.get("connected", False),
         "status": status.get("status", "not_connected"),
         "number": status.get("number"),
+        "profile_name": status.get("profile_name"),
+        "profile_picture": status.get("profile_picture"),
         # Monthly outbound quota (billing / trial) — aligned with entitlement usage
         "messages_sent": limits.get("monthly_sent", 0),
         "messages_limit": limits.get("monthly_limit", 0),
@@ -9678,10 +9721,24 @@ async def whatsapp_sync(user = Depends(get_current_user)):
     if not status.get("connected"):
         raise HTTPException(status_code=400, detail="WhatsApp not connected")
 
+    if hasattr(whatsapp_service, "fetch_own_profile"):
+        try:
+            await whatsapp_service.fetch_own_profile(user["_id"])
+        except Exception as profile_err:
+            logging.warning(f"Own profile fetch failed: {profile_err}")
+
     contacts_result = await whatsapp_service.fetch_contacts(user["_id"])
     logging.info(f"Contact sync result: {contacts_result}")
     history_result = await whatsapp_service.fetch_chat_history(user["_id"])
     logging.info(f"History sync result: {history_result}")
+
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "whatsapp.initial_sync_done": True,
+            "whatsapp.contact_sync_version": CONTACT_SYNC_VERSION,
+        }},
+    )
 
     # Get current DB totals so user sees actual state
     total_customers = await db.customers.count_documents({"user_id": user["_id"]})
@@ -10111,9 +10168,12 @@ async def send_whatsapp_media(
     try:
         business_id = user.get("business_id", user["_id"])
 
-        to_number = sanitize_phone(to_number)
-        if not to_number or len(to_number) < 6 or len(to_number) > 15:
-            raise HTTPException(status_code=400, detail="Invalid phone number")
+        if _is_lid_destination(to_number):
+            to_number = str(to_number).strip()
+        else:
+            to_number = sanitize_phone(to_number)
+            if not to_number or len(to_number) < 6 or len(to_number) > 15:
+                raise HTTPException(status_code=400, detail="Invalid phone number")
 
         # Enforce subscription plan message limits
         from plan_enforcement import enforce_message_limit
@@ -10183,9 +10243,12 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
     try:
         business_id = user.get("business_id", user["_id"])
 
-        to_number = sanitize_phone(to_number)
-        if not to_number or len(to_number) < 6 or len(to_number) > 15:
-            raise HTTPException(status_code=400, detail="Invalid phone number")
+        if _is_lid_destination(to_number):
+            to_number = str(to_number).strip()
+        else:
+            to_number = sanitize_phone(to_number)
+            if not to_number or len(to_number) < 6 or len(to_number) > 15:
+                raise HTTPException(status_code=400, detail="Invalid phone number")
 
         # Enforce subscription plan message limits
         from plan_enforcement import enforce_message_limit
@@ -10194,7 +10257,7 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
         # Find customer to check assignment
         customer = await db.customers.find_one({
             "user_id": business_id,
-            **_phone_match_clause(to_number)
+            **_destination_match_clause(to_number)
         })
         
         # Auto-assign on first reply if unassigned
@@ -10449,10 +10512,23 @@ async def evolution_webhook(request: Request):
                 if user:
                     user_id = user["_id"]
                     # Check if this is first sync (no synced_contacts flag)
-                    if not user.get("whatsapp", {}).get("initial_sync_done"):
+                    # Businesses that linked WhatsApp before contact syncing
+                    # learned to page and to keep LID-only contacts have an
+                    # incomplete address book, so re-run the import once.
+                    _wa_state = user.get("whatsapp", {})
+                    _synced_version = _wa_state.get("contact_sync_version", 0)
+                    if not _wa_state.get("initial_sync_done") or _synced_version < CONTACT_SYNC_VERSION:
                         async def _run_initial_sync(uid):
                             try:
                                 logging.info(f"Starting initial WhatsApp sync for user {uid}")
+                                # Read the linked account's own profile first so the
+                                # app can show who is connected while contacts import.
+                                if hasattr(whatsapp_service, "fetch_own_profile"):
+                                    try:
+                                        profile = await whatsapp_service.fetch_own_profile(uid)
+                                        logging.info(f"Own WhatsApp profile: {profile}")
+                                    except Exception as profile_err:
+                                        logging.warning(f"Own profile fetch failed: {profile_err}")
                                 contacts_result = await whatsapp_service.fetch_contacts(uid)
                                 logging.info(f"Contact sync: {contacts_result}")
                                 history_result = await whatsapp_service.fetch_chat_history(uid)
@@ -10460,7 +10536,10 @@ async def evolution_webhook(request: Request):
                                 # Mark sync as done so we don't re-run
                                 await db.users.update_one(
                                     {"_id": uid},
-                                    {"$set": {"whatsapp.initial_sync_done": True}}
+                                    {"$set": {
+                                        "whatsapp.initial_sync_done": True,
+                                        "whatsapp.contact_sync_version": CONTACT_SYNC_VERSION,
+                                    }}
                                 )
                                 # Run AI classification on all synced contacts — auto-promotes high-confidence ones
                                 try:
@@ -10642,9 +10721,14 @@ async def evolution_webhook(request: Request):
                     "lid_jid": remote_jid_val,
                 })
                 if customer and not number_unavailable:
+                    # WhatsApp has now exposed the number behind this LID, so
+                    # the contact must stop being reported as number-less.
                     await db.customers.update_one(
                         {"_id": customer["_id"]},
-                        {"$set": {"phone_number": from_number}}
+                        {
+                            "$set": {"phone_number": from_number},
+                            "$unset": {"phone_number_unavailable": ""},
+                        },
                     )
 
             if customer:
@@ -10745,7 +10829,7 @@ async def evolution_webhook(request: Request):
                         notification = (
                             f"🆕 *New contact just messaged you!*\n\n"
                             f"👤 *{cust_name}*\n"
-                            f"📱 {cust_phone}\n\n"
+                            f"📱 {_display_contact_number(cust_phone)}\n\n"
                             f"💬 _{preview}_\n\n"
                             f"Open your CRM app to view and reply."
                         )

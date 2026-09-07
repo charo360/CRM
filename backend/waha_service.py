@@ -14,7 +14,7 @@ import os
 import random
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 from urllib.parse import quote
 
@@ -109,6 +109,18 @@ def _is_phone_like(value: str) -> bool:
     """Return True once non-digits are stripped the value is a plausible phone number."""
     digits = _digits(value)
     return 6 <= len(digits) <= 15
+
+
+_PLACEHOLDER_NAME = re.compile(r"^(?:Customer|Contact)\s+\d+$|^WhatsApp contact$|^\+?[\d\s()-]+$")
+
+
+def _is_placeholder_name(value: object) -> bool:
+    """Return whether a stored name is one Zilo invented rather than one WhatsApp gave us.
+
+    Placeholders may always be replaced by a real push name; a name the
+    business typed itself must never be overwritten by a sync.
+    """
+    return bool(_PLACEHOLDER_NAME.match(str(value or "").strip()))
 
 
 def _message_type(media: Optional[dict]) -> str:
@@ -216,6 +228,109 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         index = int(hashlib.sha256(str(user_id).encode("utf-8")).hexdigest(), 16) % len(self.node_urls)
         return index, self.node_urls[index]
 
+    async def _session_and_node(self, user_id: str) -> tuple[str, str]:
+        """Return the business's WAHA session name and the node hosting it."""
+        user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp.instance_name": 1})
+        session = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
+        _, base_url = await self._node_for_user(user_id)
+        return session, base_url
+
+    async def _lid_phone_map(self, user_id: str, max_entries: int = 10000) -> dict[str, str]:
+        """Fetch WhatsApp's whole LID -> phone table in a handful of requests.
+
+        Resolving a LID one contact at a time costs a round trip each, so a
+        real address book never finished syncing before the request timed out.
+        WAHA already keeps the mapping it has learned, so page it once and
+        prime the per-LID cache from the result.
+        """
+        session, base_url = await self._session_and_node(user_id)
+        mapping: dict[str, str] = {}
+        now = datetime.utcnow().timestamp()
+        page, offset = 500, 0
+        try:
+            async with httpx.AsyncClient(timeout=30, verify=self.verify_ssl) as client:
+                while offset < max_entries:
+                    response = await client.get(
+                        f"{base_url}/api/{quote(session, safe='')}/lids",
+                        headers=self._headers(),
+                        params={"limit": page, "offset": offset},
+                    )
+                    if response.status_code != 200:
+                        logger.info(
+                            "[waha._lid_phone_map] lids listing unavailable (%s); falling back to per-contact lookups",
+                            response.status_code,
+                        )
+                        break
+                    rows = response.json()
+                    if not isinstance(rows, list) or not rows:
+                        break
+                    before = len(mapping)
+                    for row in rows:
+                        lid = _digits(str((row or {}).get("lid") or ""))
+                        phone = _digits(str((row or {}).get("pn") or ""))
+                        if lid and _is_phone_like(phone):
+                            mapping[lid] = phone
+                            self._lid_phone_cache[f"{lid}@lid"] = (phone, now + 600)
+                    # An engine that ignores ``offset`` would otherwise be
+                    # asked for the same page until the cap is reached.
+                    if len(rows) < page or len(mapping) == before:
+                        break
+                    offset += page
+        except Exception as exc:
+            logger.warning("[waha._lid_phone_map] %s", exc)
+        return mapping
+
+    async def _mark_profile_checked(self, user_id: str) -> dict:
+        """Record a profile attempt so failures back off instead of retrying forever."""
+        try:
+            await self.db.users.update_one(
+                {"_id": user_id}, {"$set": {"whatsapp.profile_checked_at": datetime.utcnow()}}
+            )
+        except Exception as exc:
+            logger.debug("[waha._mark_profile_checked] %s", exc)
+        return {}
+
+    async def fetch_own_profile(self, user_id: str) -> dict:
+        """Read the linked account's own WhatsApp profile: name, photo and number.
+
+        The connection webhook only ever recorded a number, so the app had
+        nothing to show a business about the account it had just linked.
+        """
+        session, base_url = await self._session_and_node(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
+                response = await client.get(
+                    f"{base_url}/api/{quote(session, safe='')}/profile", headers=self._headers()
+                )
+            if response.status_code != 200:
+                logger.info("[waha.fetch_own_profile] non-200 %s", response.status_code)
+                return await self._mark_profile_checked(user_id)
+            data = response.json() or {}
+        except Exception as exc:
+            logger.warning("[waha.fetch_own_profile] %s", exc)
+            return await self._mark_profile_checked(user_id)
+
+        profile = {
+            "name": str(data.get("name") or "").strip() or None,
+            "picture": data.get("picture") or None,
+            "number": _jid_to_phone(str(data.get("id") or "")) or None,
+        }
+        update = {
+            f"whatsapp.profile_{key}": value
+            for key, value in (("name", profile["name"]), ("picture", profile["picture"]))
+            if value
+        }
+        if profile["number"]:
+            update["whatsapp.phone_number"] = profile["number"]
+        # Stamp every attempt so an engine that never returns a profile is not
+        # re-asked on each status poll.
+        update["whatsapp.profile_checked_at"] = datetime.utcnow()
+        try:
+            await self.db.users.update_one({"_id": user_id}, {"$set": update})
+        except Exception as exc:
+            logger.warning("[waha.fetch_own_profile] could not store profile: %s", exc)
+        return profile
+
     async def _resolve_lid_phone(self, user_id: str, remote_jid: str) -> Optional[str]:
         """Resolve a WhatsApp LID JID to the underlying phone number via WAHA.
 
@@ -232,9 +347,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             if now < expires:
                 return phone
 
-        user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp.instance_name": 1})
-        session = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
-        _, base_url = await self._node_for_user(user_id)
+        session, base_url = await self._session_and_node(user_id)
         try:
             async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
                 response = await client.get(
@@ -516,6 +629,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             state = str(data.get("status") or "").upper()
             me = data.get("me") or {}
             number = _jid_to_phone(str(me.get("id") or "")) or None
+            connected = state == "WORKING"
             # Only the connection webhook used to record this, so a business
             # that linked WhatsApp before then never had it stored — and its
             # shop sent buyers to the sign-up number instead. WAHA tells us
@@ -528,7 +642,28 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                     )
                 except Exception as exc:
                     logger.warning("[waha.get_instance_status] could not store number: %s", exc)
-            return {"connected": state == "WORKING", "status": state.lower() or "unknown", "number": number}
+            stored = await self.db.users.find_one(
+                {"_id": user_id},
+                {"whatsapp.profile_name": 1, "whatsapp.profile_picture": 1, "whatsapp.profile_checked_at": 1},
+            ) or {}
+            whatsapp = stored.get("whatsapp") or {}
+            profile_name = whatsapp.get("profile_name")
+            profile_picture = whatsapp.get("profile_picture")
+            checked_at = whatsapp.get("profile_checked_at")
+            due = not isinstance(checked_at, datetime) or checked_at < datetime.utcnow() - timedelta(hours=6)
+            # Read the linked account's own profile once, then serve it from
+            # the user document so status polling stays cheap.
+            if connected and not profile_name and due:
+                profile = await self.fetch_own_profile(user_id)
+                profile_name = profile.get("name") or profile_name
+                profile_picture = profile.get("picture") or profile_picture
+                number = number or profile.get("number")
+            if not connected:
+                profile_name = profile_picture = None
+            return {
+                "connected": connected, "status": state.lower() or "unknown", "number": number,
+                "profile_name": profile_name, "profile_picture": profile_picture,
+            }
         except Exception as exc:
             logger.warning("[waha.get_instance_status] %s: %s", user_id, exc)
             return {"connected": False, "status": "error"}
@@ -700,66 +835,166 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         })
         return {"status": "error", "message": "Message was not sent. Please try again.", "delivery_error": delivery_error, "message_id": message_id}
 
-    async def fetch_contacts(self, user_id: str) -> dict:
-        user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
-        session = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
-        _, base_url = await self._node_for_user(user_id)
+    async def fetch_contacts(self, user_id: str, max_contacts: int = 10000) -> dict:
+        """Import every WhatsApp contact, including ones exposed only as a LID.
+
+        Two things used to cut the address book short: the listing was read
+        once with no paging, and any contact WhatsApp would not map back to a
+        phone number was dropped entirely. Modern WhatsApp accounts report
+        most chats as LIDs, so that silently discarded the bulk of them. Save
+        those against their LID with the number marked unavailable instead —
+        the chat still works, and no number is invented to fill the gap.
+        """
+        session, base_url = await self._session_and_node(user_id)
+        lid_map = await self._lid_phone_map(user_id)
+        created = updated = without_number = 0
+        seen = 0
+        seen_ids: set[str] = set()
+        # Older WAHA builds have no bulk LID table. Falling back to one request
+        # per contact would stall the sync on a large address book, so spend a
+        # bounded number of them; the rest import against their LID and get a
+        # number later from an inbound message or the repair pass.
+        lookup_budget = 0 if lid_map else 200
+        page, offset = 500, 0
         try:
-            async with httpx.AsyncClient(timeout=45, verify=self.verify_ssl) as client:
-                response = await client.get(
-                    f"{base_url}/api/contacts/all", headers=self._headers(),
-                    params={"session": session, "limit": 500, "offset": 0},
-                )
-            if response.status_code != 200:
-                return {"status": "error", "message": response.text[:200]}
-            contacts = response.json()
-            created = updated = 0
-            for contact in contacts if isinstance(contacts, list) else []:
-                if contact.get("isGroup"):
-                    continue
-                contact_id = str(contact.get("id") or "")
-                is_lid_contact = _is_lid_jid(contact_id)
-                if is_lid_contact:
-                    phone = await self._resolve_lid_phone(user_id, contact_id)
-                else:
-                    phone = _digits(str(contact.get("number") or _jid_to_phone(contact_id)))
-                if not phone or not _is_phone_like(phone):
-                    # Do not bulk-create a contact with the opaque LID digits.
-                    # A later inbound message can still create a LID-backed
-                    # contact, preserving the chat without fabricating a phone.
-                    continue
-                name = contact.get("name") or contact.get("pushname") or contact.get("shortName") or f"Contact {phone[-4:]}"
-                existing = await self.db.customers.find_one({"user_id": user_id, "phone_number": phone})
-                if existing:
-                    if re.match(r"^(Customer|Contact)\s+\d+$", existing.get("name", "")) and not re.match(r"^(Customer|Contact)\s+\d+$", name):
-                        update = {"name": name, "synced_from_whatsapp": True}
+            async with httpx.AsyncClient(timeout=60, verify=self.verify_ssl) as client:
+                while offset < max_contacts:
+                    response = await client.get(
+                        f"{base_url}/api/contacts/all", headers=self._headers(),
+                        params={"session": session, "limit": page, "offset": offset},
+                    )
+                    if response.status_code != 200:
+                        if offset == 0:
+                            return {"status": "error", "message": response.text[:200]}
+                        logger.warning(
+                            "[waha.fetch_contacts] stopped at offset %s: %s %s",
+                            offset, response.status_code, response.text[:200],
+                        )
+                        break
+                    contacts = response.json()
+                    if not isinstance(contacts, list) or not contacts:
+                        break
+                    new_on_this_page = False
+                    for contact in contacts:
+                        if contact.get("isGroup") or contact.get("isMe"):
+                            continue
+                        contact_id = str(contact.get("id") or "")
+                        if not contact_id or "@g.us" in contact_id or "@broadcast" in contact_id:
+                            continue
+                        if contact_id in seen_ids:
+                            continue
+                        seen_ids.add(contact_id)
+                        new_on_this_page = True
+                        seen += 1
+                        is_lid_contact = _is_lid_jid(contact_id)
                         if is_lid_contact:
-                            update["lid_jid"] = contact_id
-                        await self.db.customers.update_one({"_id": existing["_id"]}, {"$set": update})
-                        updated += 1
-                else:
-                    await self.db.customers.insert_one({
-                        "_id": str(uuid.uuid4()), "user_id": user_id, "name": name, "phone_number": phone,
-                        "notes": "", "tags": ["New"], "created_at": datetime.utcnow(), "auto_created": True,
-                        "synced_from_whatsapp": True, "is_customer": False,
-                        **({"lid_jid": contact_id} if is_lid_contact else {}),
-                    })
-                    created += 1
-            return {"status": "success", "created": created, "updated": updated, "total": len(contacts) if isinstance(contacts, list) else 0}
+                            phone = lid_map.get(_digits(contact_id))
+                            if not phone and lookup_budget > 0:
+                                lookup_budget -= 1
+                                phone = await self._resolve_lid_phone(user_id, contact_id)
+                        else:
+                            phone = _digits(str(contact.get("number") or _jid_to_phone(contact_id)))
+                        if not _is_phone_like(phone or ""):
+                            phone = None
+                        if not phone and not is_lid_contact:
+                            # Nothing identifies this row: no usable number and
+                            # no LID chat to fall back on.
+                            continue
+                        if not phone:
+                            without_number += 1
+
+                        fallback_name = f"Contact {phone[-4:]}" if phone else "WhatsApp contact"
+                        name = (
+                            contact.get("name") or contact.get("pushname")
+                            or contact.get("shortName") or fallback_name
+                        )
+                        created_one, updated_one = await self._upsert_synced_contact(
+                            user_id, contact_id, is_lid_contact, phone, name
+                        )
+                        created += created_one
+                        updated += updated_one
+                    # Stop when a page repeats itself, so an engine that
+                    # ignores ``offset`` cannot spin to the cap.
+                    if len(contacts) < page or not new_on_this_page:
+                        break
+                    offset += page
+            return {
+                "status": "success", "created": created, "updated": updated,
+                "total": seen, "without_number": without_number,
+            }
         except Exception as exc:
             logger.error("[waha.fetch_contacts] %s", exc)
             return {"status": "error", "message": str(exc)}
 
+    async def _upsert_synced_contact(
+        self, user_id: str, contact_id: str, is_lid_contact: bool,
+        phone: Optional[str], name: str,
+    ) -> tuple[int, int]:
+        """Store one synced contact, returning (created, updated) counts.
+
+        Matching looks up the LID first so a contact already created by an
+        inbound message is updated rather than duplicated.
+        """
+        existing = None
+        if is_lid_contact:
+            existing = await self.db.customers.find_one({"user_id": user_id, "lid_jid": contact_id})
+        if not existing and phone:
+            existing = await self.db.customers.find_one({
+                "user_id": user_id,
+                "$or": [{"phone_number": phone}, {"phone_number": f"+{phone}"}],
+            })
+
+        if not existing:
+            document = {
+                "_id": str(uuid.uuid4()), "user_id": user_id, "name": name,
+                "phone_number": phone or "", "notes": "", "tags": ["New"],
+                "created_at": datetime.utcnow(), "auto_created": True,
+                "synced_from_whatsapp": True, "is_customer": False,
+            }
+            if is_lid_contact:
+                document["lid_jid"] = contact_id
+                if not phone:
+                    document["phone_number_unavailable"] = True
+            await self.db.customers.insert_one(document)
+            return 1, 0
+
+        update: dict = {}
+        unset: dict = {}
+        if _is_placeholder_name(existing.get("name")) and not _is_placeholder_name(name):
+            update["name"] = name
+        if is_lid_contact and existing.get("lid_jid") != contact_id:
+            update["lid_jid"] = contact_id
+        if phone and _digits(str(existing.get("phone_number") or "")) != phone:
+            update["phone_number"] = phone
+        if phone and existing.get("phone_number_unavailable"):
+            unset["phone_number_unavailable"] = ""
+        if not update and not unset:
+            return 0, 0
+        update["synced_from_whatsapp"] = True
+        operation: dict = {"$set": update}
+        if unset:
+            operation["$unset"] = unset
+        await self.db.customers.update_one({"_id": existing["_id"]}, operation)
+        return 0, 1
+
     async def _import_messages(self, user_id: str, session: str, chat_id: str, limit: int = 50) -> int:
-        if _is_lid_jid(chat_id):
+        is_lid = _is_lid_jid(chat_id)
+        if is_lid:
             phone = await self._resolve_lid_phone(user_id, chat_id)
         else:
             phone = _digits(_jid_to_phone(chat_id))
-            if not _is_phone_like(phone):
-                phone = None
-        if not phone:
-            return 0
-        customer = await self.db.customers.find_one({"user_id": user_id, "phone_number": phone})
+        if not _is_phone_like(phone or ""):
+            phone = None
+        # A LID chat still has a contact even when WhatsApp withholds the
+        # number, so look it up by LID before giving up on the history.
+        customer = None
+        if is_lid:
+            customer = await self.db.customers.find_one({"user_id": user_id, "lid_jid": chat_id})
+        if not customer and phone:
+            customer = await self.db.customers.find_one({
+                "user_id": user_id,
+                "$or": [{"phone_number": phone}, {"phone_number": f"+{phone}"}],
+            })
         if not customer:
             return 0
         try:
@@ -783,7 +1018,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 doc = {
                     "_id": str(uuid.uuid4()), "customer_id": customer["_id"], "user_id": user_id,
                     "direction": "outgoing" if item.get("fromMe") else "incoming", "content": item.get("body") or "",
-                    "message_type": _message_type(media), "from_number": phone, "remote_jid": chat_id,
+                    "message_type": _message_type(media), "from_number": phone or "", "remote_jid": chat_id,
                     "evo_message_id": provider_id, "created_at": created_at, "synced_from_history": True,
                 }
                 if media.get("url"):
@@ -825,9 +1060,29 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             return {"status": "error", "message": str(exc)}
 
     async def fetch_history_for_contact(self, user_id: str, phone: str, customer_id: str) -> dict:
-        user_doc = await self.db.users.find_one({"_id": user_id}, {"whatsapp": 1})
-        session = (user_doc or {}).get("whatsapp", {}).get("instance_name") or self._instance_name(user_id)
-        imported = await self._import_messages(user_id, session, _chat_id(phone), 50)
+        """Import one contact's history from whichever chat WhatsApp actually uses.
+
+        Building ``_chat_id(phone)`` unconditionally produced a bare ``@c.us``
+        for a contact whose number WhatsApp withholds, which fetched nothing.
+        Try the contact's real LID chat first and fall back to the phone JID.
+        """
+        session, _ = await self._session_and_node(user_id)
+        customer = await self.db.customers.find_one(
+            {"_id": customer_id, "user_id": user_id}, {"lid_jid": 1, "phone_number": 1}
+        ) or {}
+        digits = _digits(str(phone or customer.get("phone_number") or ""))
+
+        candidates = []
+        if _is_lid_jid(customer.get("lid_jid")):
+            candidates.append(str(customer["lid_jid"]))
+        if _is_phone_like(digits):
+            candidates.append(_chat_id(digits))
+
+        imported = 0
+        for candidate in candidates:
+            imported = await self._import_messages(user_id, session, candidate, 50)
+            if imported:
+                break
         return {"status": "success", "messages_imported": imported}
 
     async def fetch_profile_picture(self, user_id: str, phone: str) -> Optional[str]:
@@ -875,8 +1130,15 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             logger.warning("[waha.fetch_profile_picture] exception: %s", exc)
         return None
 
-    async def fetch_profile_pictures_bulk(self, user_id: str) -> dict:
-        """Fetch missing pictures, including contacts represented by a LID."""
+    async def fetch_profile_pictures_bulk(self, user_id: str, limit: int = 500) -> dict:
+        """Fetch missing pictures, including contacts represented by a LID.
+
+        Contacts that have no photo on WhatsApp used to be re-requested on
+        every run, so the same first page was retried forever and contacts
+        further down the list never got one. Record when each was last asked
+        about and let the next run move past them.
+        """
+        recheck_after = datetime.utcnow() - timedelta(days=7)
         customers = await self.db.customers.find(
             {
                 "user_id": user_id,
@@ -885,9 +1147,15 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                     {"profile_picture": None},
                     {"profile_picture": ""},
                 ],
+                "$and": [{
+                    "$or": [
+                        {"profile_picture_checked_at": {"$exists": False}},
+                        {"profile_picture_checked_at": {"$lt": recheck_after}},
+                    ],
+                }],
             },
             {"_id": 1, "phone_number": 1, "lid_jid": 1},
-        ).to_list(200)
+        ).to_list(limit)
 
         updated = 0
         for customer in customers:
@@ -897,12 +1165,11 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             if not contact_ref:
                 continue
             picture = await self.fetch_profile_picture(user_id, str(contact_ref))
+            changes = {"profile_picture_checked_at": datetime.utcnow()}
             if picture:
-                await self.db.customers.update_one(
-                    {"_id": customer["_id"]},
-                    {"$set": {"profile_picture": picture}},
-                )
+                changes["profile_picture"] = picture
                 updated += 1
+            await self.db.customers.update_one({"_id": customer["_id"]}, {"$set": changes})
         return {"status": "success", "updated": updated, "checked": len(customers)}
 
     async def mark_as_read(self, instance_name: str, remote_jid: str, evo_msg_id: str) -> None:

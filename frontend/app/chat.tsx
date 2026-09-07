@@ -44,13 +44,18 @@ export default function ChatScreen() {
     customerId: string;
     customerName: string;
     customerPhone: string;
+    customerLid: string;
     prefill: string;
   }>();
 
   const customerId = params.customerId || '';
   const customerName = params.customerName || 'Customer';
   const customerPhone = params.customerPhone || '';
+  const customerLid = params.customerLid || '';
   const visiblePhone = customerPhone || 'Phone number hidden by WhatsApp';
+  // WhatsApp withholds some contacts' numbers. Their LID is the only way to
+  // reach the chat, so send to that rather than to an empty phone number.
+  const sendTarget = customerPhone || customerLid;
   const prefill = params.prefill || '';
 
   const insets = useSafeAreaInsets();
@@ -297,7 +302,7 @@ export default function ChatScreen() {
     setMessages(prev => [optimisticMsg, ...prev]);
     try {
       const caption = inputText.trim();
-      const result = await whatsappAPI.sendMedia(customerPhone, uri, fileName, mimeType, caption, customerName);
+      const result = await whatsappAPI.sendMedia(sendTarget, uri, fileName, mimeType, caption, customerName);
       if (caption) setInputText('');
       setMessages(prev =>
         prev.map(m =>
@@ -442,7 +447,7 @@ export default function ChatScreen() {
     setMessages(prev => [optimisticMsg, ...prev]);
 
     try {
-      const result = await whatsappAPI.sendMessage(customerPhone, text, customerName);
+      const result = await whatsappAPI.sendMessage(sendTarget, text, customerName);
 
       // Replace optimistic message with real one
       setMessages(prev =>
@@ -666,7 +671,7 @@ export default function ChatScreen() {
           style={styles.headerInfo}
           onPress={() => router.push({
             pathname: '/customer-profile',
-            params: { customerId, customerName, customerPhone },
+            params: { customerId, customerName, customerPhone, customerLid },
           })}
           activeOpacity={0.7}
         >

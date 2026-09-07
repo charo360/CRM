@@ -35,6 +35,10 @@ interface Customer {
   last_message: string | null;
   last_contacted: string | null;
   profile_picture: string | null;
+  // Present when WhatsApp identifies this contact only by an opaque LID and
+  // withholds the phone number. It is the only way to reach the chat.
+  lid_jid?: string | null;
+  phone_number_unavailable?: boolean;
   auto_reply: boolean;
   unread_count: number;
   created_at: string;
@@ -535,11 +539,12 @@ export default function CustomersScreen() {
 
     setSaving(true);
     try {
-      // Build full phone number with country code
-      let fullPhone = newPhone.trim();
-      if (!fullPhone.startsWith('+')) {
-        fullPhone = fullPhone.replace(/^0+/, '');
-        fullPhone = `${customerCountry.dial}${fullPhone}`;
+      // Normalize to E.164 using the same helper as contact import
+      const fullPhone = formatPhoneNumber(newPhone, customerCountry);
+      if (!fullPhone || fullPhone.length < 6) {
+        Alert.alert('Error', 'Please enter a valid phone number');
+        setSaving(false);
+        return;
       }
       const response = await apiClient.post('/customers', {
         name: newName,
@@ -654,20 +659,23 @@ export default function CustomersScreen() {
   };
 
   const formatPhoneNumber = (phone: string, country?: Country) => {
-    let cleaned = phone.replace(/\D/g, '');
+    const cleaned = phone.replace(/\D/g, '');
+    if (!cleaned) return cleaned;
+    const c = country || customerCountry;
+    const dial = c.dial.replace('+', '');
 
-    // If starts with 0, replace with country dial code
+    // Already E.164 with country code (e.g. 254712...)
+    if (cleaned.startsWith(dial)) {
+      return '+' + cleaned;
+    }
+
+    // Local format with leading 0 (e.g. 0712...)
     if (cleaned.startsWith('0')) {
-      const dial = (country || customerCountry).dial.replace('+', '');
-      cleaned = dial + cleaned.substring(1);
+      return '+' + dial + cleaned.substring(1);
     }
 
-    // Add + if not present
-    if (!cleaned.startsWith('+')) {
-      cleaned = '+' + cleaned;
-    }
-
-    return cleaned;
+    // Bare local number without country code
+    return '+' + dial + cleaned;
   };
 
   const toggleContactSelection = (contactId: string) => {
@@ -781,6 +789,7 @@ export default function CustomersScreen() {
         customerId: customer.id,
         customerName: customer.name,
         customerPhone: customer.phone_number,
+        customerLid: customer.lid_jid || '',
       },
     });
   };
@@ -874,6 +883,7 @@ export default function CustomersScreen() {
           customerId: productPickerCustomer.id,
           customerName: productPickerCustomer.name,
           customerPhone: productPickerCustomer.phone_number,
+          customerLid: productPickerCustomer.lid_jid || '',
           prefill: text,
         },
       });
@@ -932,6 +942,7 @@ export default function CustomersScreen() {
         customerId: draftCustomer.id,
         customerName: draftCustomer.name,
         customerPhone: draftCustomer.phone_number,
+        customerLid: draftCustomer.lid_jid || '',
         prefill: text,
       },
     });
@@ -1050,7 +1061,7 @@ export default function CustomersScreen() {
         </View>
         <View style={styles.chatRowBottom}>
           <Text style={styles.chatRowMessage} numberOfLines={1}>
-            {item.last_message || item.notes || item.phone_number}
+            {item.last_message || item.notes || item.phone_number || 'Number hidden by WhatsApp'}
           </Text>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             {/* Only show assignment badges for teams (1+ members) */}
@@ -1425,7 +1436,7 @@ export default function CustomersScreen() {
                 <View style={[styles.contactRow, item.suggested_type && { borderLeftWidth: 3, borderLeftColor: item.suggested_type === 'supplier' ? '#FF9500' : '#25D366' }]}>
                   <TouchableOpacity
                     style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
-                    onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: item.name, customerPhone: item.phone_number } })}
+                    onPress={() => router.push({ pathname: '/chat', params: { customerId: item.id, customerName: item.name, customerPhone: item.phone_number, customerLid: item.lid_jid || '' } })}
                   >
                     <View style={styles.contactAvatar}>
                       <Text style={styles.contactAvatarText}>{item.name?.charAt(0)?.toUpperCase() || '?'}</Text>
@@ -1446,7 +1457,7 @@ export default function CustomersScreen() {
                           </View>
                         )}
                       </View>
-                      <Text style={styles.contactPhone}>{item.phone_number}</Text>
+                      <Text style={styles.contactPhone}>{item.phone_number || 'Number hidden by WhatsApp'}</Text>
                       {item.suggestion_reason ? <Text numberOfLines={1} style={{ color: '#8899AA', fontSize: 11, marginTop: 1 }}>{item.suggestion_reason}</Text> : null}
                       {item.suggested_type && (
                         <View style={{ flexDirection: 'row', gap: 6, marginTop: 6 }}>

@@ -89,6 +89,9 @@ export default function AccountScreen() {
   const [waConnected, setWaConnected] = useState(false);
   const [waStatus, setWaStatus] = useState('not_connected');
   const [waNumber, setWaNumber] = useState('');
+  const [waProfileName, setWaProfileName] = useState('');
+  const [waProfilePicture, setWaProfilePicture] = useState('');
+  const [waSyncing, setWaSyncing] = useState(false);
   const [waPhoneInput, setWaPhoneInput] = useState('');
   const [waPairingCode, setWaPairingCode] = useState('');
   const [waQrBase64, setWaQrBase64] = useState('');
@@ -156,6 +159,8 @@ export default function AccountScreen() {
         setWaConnected(waRes.connected);
         setWaStatus(waRes.status);
         setWaNumber(waRes.number || '');
+        setWaProfileName(waRes.profile_name || '');
+        setWaProfilePicture(waRes.profile_picture || '');
         setWaMsgSent(waRes.messages_sent || 0);
         setWaMsgLimit(waRes.messages_limit || 50);
       } catch (e) {
@@ -165,6 +170,25 @@ export default function AccountScreen() {
       console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleWhatsAppSync = async () => {
+    setWaSyncing(true);
+    try {
+      const res = await whatsappAPI.sync();
+      const created = res?.contacts?.created ?? 0;
+      const hidden = res?.contacts?.without_number ?? 0;
+      const messages = res?.history?.messages_imported ?? 0;
+      Alert.alert(
+        'Sync complete',
+        `${created} new contact${created === 1 ? '' : 's'} and ${messages} message${messages === 1 ? '' : 's'} imported.` +
+          (hidden ? `\n\n${hidden} contact${hidden === 1 ? '' : 's'} kept without a number because WhatsApp does not share it.` : ''),
+      );
+    } catch (error: any) {
+      Alert.alert('Sync failed', error.response?.data?.detail || 'Could not sync WhatsApp right now.');
+    } finally {
+      setWaSyncing(false);
     }
   };
 
@@ -227,6 +251,8 @@ export default function AccountScreen() {
           setWaConnected(true);
           setWaStatus(waRes.status);
           setWaNumber(waRes.number || '');
+          setWaProfileName(waRes.profile_name || '');
+          setWaProfilePicture(waRes.profile_picture || '');
           setWaPairingCode('');
           setWaMsgSent(waRes.messages_sent || 0);
           setWaMsgLimit(waRes.messages_limit || 50);
@@ -260,6 +286,8 @@ export default function AccountScreen() {
           setWaConnected(true);
           setWaStatus(waRes.status);
           setWaNumber(waRes.number || '');
+          setWaProfileName(waRes.profile_name || '');
+          setWaProfilePicture(waRes.profile_picture || '');
           setWaQrBase64('');
           setWaMsgSent(waRes.messages_sent || 0);
           setWaMsgLimit(waRes.messages_limit || 50);
@@ -361,6 +389,8 @@ export default function AccountScreen() {
               setWaConnected(false);
               setWaStatus('not_connected');
               setWaNumber('');
+              setWaProfileName('');
+              setWaProfilePicture('');
               setWaPairingCode('');
               setWaQrBase64('');
               setWaPhoneInput('');
@@ -657,7 +687,35 @@ export default function AccountScreen() {
                     </Text>
                   </TouchableOpacity>
                 </View>
-                <Text style={{ color: '#8A9BB5', fontSize: 14 }}>Number: {waNumber}</Text>
+                <View style={styles.whatsappProfileRow}>
+                  {waProfilePicture ? (
+                    <Image source={{ uri: waProfilePicture }} style={styles.whatsappProfileAvatar} />
+                  ) : (
+                    <View style={[styles.whatsappProfileAvatar, styles.whatsappProfileAvatarFallback]}>
+                      <Text style={styles.whatsappProfileInitial}>
+                        {(waProfileName || waNumber || '?').charAt(0).toUpperCase()}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.whatsappProfileName} numberOfLines={1}>
+                      {waProfileName || 'WhatsApp account'}
+                    </Text>
+                    <Text style={styles.whatsappProfileNumber} numberOfLines={1}>
+                      {waNumber ? `+${waNumber.replace(/^\+/, '')}` : 'Number unavailable'}
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  onPress={handleWhatsAppSync}
+                  disabled={waSyncing}
+                  style={[styles.whatsappSyncButton, waSyncing && { opacity: 0.6 }]}
+                >
+                  <Ionicons name={waSyncing ? 'sync-circle-outline' : 'sync-outline'} size={16} color="#25D366" />
+                  <Text style={styles.whatsappSyncButtonText}>
+                    {waSyncing ? 'Syncing contacts...' : 'Sync contacts & chats'}
+                  </Text>
+                </TouchableOpacity>
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
                   <Text style={{ color: '#8A9BB5', fontSize: 13 }}>Messages this month</Text>
                   <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '600' }}>{waMsgSent} / {waMsgLimit}</Text>
@@ -1468,6 +1526,52 @@ const styles = StyleSheet.create({
     backgroundColor: '#1A2942',
     borderRadius: 16,
     overflow: 'hidden',
+  },
+  whatsappSyncButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(37,211,102,0.1)',
+  },
+  whatsappSyncButtonText: {
+    color: '#25D366',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  whatsappProfileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginTop: 4,
+  },
+  whatsappProfileAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  whatsappProfileAvatarFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  whatsappProfileInitial: {
+    color: '#25D366',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  whatsappProfileName: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  whatsappProfileNumber: {
+    color: '#8A9BB5',
+    fontSize: 13,
+    marginTop: 2,
   },
   whatsappConnectedContent: {
     padding: 16,
