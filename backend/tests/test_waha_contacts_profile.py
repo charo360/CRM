@@ -55,6 +55,12 @@ class FakeCollection:
                     if not (actual is not None
                             and _re.search(expected["$regex"], str(actual))):
                         return False
+                if "$not" in expected:
+                    import re as _re
+                    inner = expected["$not"]
+                    pattern = inner.get("$regex") if isinstance(inner, dict) else inner
+                    if actual is not None and _re.search(pattern, str(actual)):
+                        return False
                 continue
             if actual != expected:
                 return False
@@ -94,12 +100,17 @@ class FakeCollection:
         for i, row in enumerate(self.rows):
             if self._matches(row, query):
                 self.rows.pop(i)
-                return
+                return type("R", (), {"deleted_count": 1})()
+        return type("R", (), {"deleted_count": 0})()
+
+    async def delete_many(self, query):
+        before = len(self.rows)
+        self.rows = [r for r in self.rows if not self._matches(r, query)]
+        return type("R", (), {"deleted_count": before - len(self.rows)})()
 
     def aggregate(self, pipeline):
         """Support the $match + $group shape the repair pass uses."""
         rows = [dict(r) for r in self.rows]
-        grouped = None
         for stage in pipeline:
             if "$match" in stage:
                 match = stage["$match"]
@@ -121,13 +132,18 @@ class FakeCollection:
                 spec = stage["$group"]["_id"]
                 seen = {}
                 for row in rows:
-                    key = tuple(
-                        (name, row.get(str(src).lstrip("$")))
-                        for name, src in spec.items()
-                    )
-                    seen[key] = {"_id": {name: value for name, value in key}}
-                grouped = list(seen.values())
-                rows = grouped
+                    if isinstance(spec, dict):
+                        # {"_id": {"a": "$x", "b": "$y"}} -> a compound key
+                        key = tuple(
+                            (name, row.get(str(src).lstrip("$")))
+                            for name, src in spec.items()
+                        )
+                        seen[key] = {"_id": {name: value for name, value in key}}
+                    else:
+                        # {"_id": "$field"} -> the field's value alone
+                        value = row.get(str(spec).lstrip("$"))
+                        seen[value] = {"_id": value}
+                rows = list(seen.values())
 
         class _Cursor:
             def __aiter__(self):
@@ -883,3 +899,98 @@ def test_contacts_endpoint_echoing_the_lid_is_still_rejected():
     }
     phone, _ = run(db, routes, lambda s: s._resolve_lid_phone("biz-1", "99887766554433@lid"))
     assert phone is None
+
+
+# ── Channels, groups and other non-people ──────────────────────────────────
+
+def test_a_channel_is_not_a_person():
+    from waha_service import _is_person_chat
+    assert _is_person_chat("254712345678@c.us")
+    assert _is_person_chat("99887766554433@lid")
+    # The real row found in production: a WhatsApp Channel saved as a contact.
+    assert not _is_person_chat("120363179873679741@newsletter")
+    assert not _is_person_chat("120363179873679741@g.us")
+    assert not _is_person_chat("status@broadcast")
+    assert not _is_person_chat("")
+
+
+def test_a_channel_post_never_creates_a_contact():
+    db = FakeDb(users=[USER])
+    service, _, original = build_service(db, {})
+    try:
+        parsed = asyncio.run(service.handle_incoming_message("user_biz_1", {
+            "chatId": "120363179873679741@newsletter",
+            "from": "120363179873679741@newsletter",
+            "body": "https://example.com/an-article",
+            "fromMe": False,
+        }))
+    finally:
+        waha_service.httpx.AsyncClient = original
+    assert parsed is None
+
+
+def test_removing_a_channel_contact_leaves_real_people_alone():
+    """Only a contact whose every message came from a channel is dropped."""
+    db = FakeDb(
+        users=[USER],
+        customers=[
+            {"_id": "chan", "user_id": "biz-1", "name": "Contact 9741"},
+            {"_id": "person", "user_id": "biz-1", "name": "Jane",
+             "phone_number": "254712345678"},
+        ],
+        messages=[
+            {"_id": "n1", "user_id": "biz-1", "customer_id": "chan",
+             "remote_jid": "120363179873679741@newsletter"},
+            # Jane appears in a group but is a real person with a real chat.
+            {"_id": "g1", "user_id": "biz-1", "customer_id": "person",
+             "remote_jid": "120363000000000001@g.us"},
+            {"_id": "p1", "user_id": "biz-1", "customer_id": "person",
+             "remote_jid": "254712345678@c.us"},
+        ],
+    )
+    removed, _ = run(db, {}, lambda s: s.remove_non_person_contacts("biz-1"))
+
+    assert removed == 1
+    assert [c["_id"] for c in db.customers.rows] == ["person"]
+    # The channel's posts go with it; Jane keeps every message.
+    assert {m["_id"] for m in db.messages.rows} == {"g1", "p1"}
+
+
+# ── Real names for placeholder contacts ────────────────────────────────────
+
+def test_placeholder_names_are_replaced_with_the_real_one():
+    db = FakeDb(users=[USER], customers=[
+        {"_id": "c1", "user_id": "biz-1", "name": "Contact 3665",
+         "phone_number": "", "lid_jid": "267413270593665@lid"},
+        {"_id": "c2", "user_id": "biz-1", "name": "Contact 9721",
+         "phone_number": "254712345678"},
+        {"_id": "c3", "user_id": "biz-1", "name": "Real Business Ltd",
+         "phone_number": "254700000000"},
+    ])
+    routes = {"/api/contacts": lambda p: (
+        {"pushname": "Amina"} if "lid" in str(p.get("contactId"))
+        else {"name": "Peter Otieno"}
+    )}
+    result, calls = run(db, routes, lambda s: s.backfill_contact_names("biz-1"))
+
+    assert result["renamed"] == 2
+    names = {c["_id"]: c["name"] for c in db.customers.rows}
+    assert names["c1"] == "Amina"
+    assert names["c2"] == "Peter Otieno"
+    # A name the business already recognises is never questioned or overwritten.
+    assert names["c3"] == "Real Business Ltd"
+    assert result["checked"] == 2
+
+
+def test_a_number_returned_as_a_name_is_not_accepted():
+    """The API happily hands back the number as the contact's 'name'."""
+    db = FakeDb(users=[USER], customers=[
+        {"_id": "c1", "user_id": "biz-1", "name": "Contact 5678",
+         "phone_number": "254712345678"},
+    ])
+    routes = {"/api/contacts": lambda p: {"name": "254712345678",
+                                          "pushname": "+254 712 345678"}}
+    result, _ = run(db, routes, lambda s: s.backfill_contact_names("biz-1"))
+
+    assert result["renamed"] == 0
+    assert db.customers.rows[0]["name"] == "Contact 5678"

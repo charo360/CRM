@@ -126,6 +126,19 @@ def _is_placeholder_name(value: object) -> bool:
 _PHONE_JID_RE = re.compile(r"(\d{6,15})@(?:s\.whatsapp\.net|c\.us)")
 
 
+# WhatsApp addresses more than people. A channel post, a group, a status
+# update and a broadcast list all arrive shaped like a chat, but none of them
+# is a customer, and one imported as a contact fills the CRM with a stream
+# nobody can reply to.
+_NON_PERSON_SUFFIXES = ("@g.us", "@broadcast", "@newsletter", "@status")
+
+
+def _is_person_chat(jid: object) -> bool:
+    """Return whether a chat id belongs to an individual we can hold as a contact."""
+    text = str(jid or "").strip().lower()
+    return bool(text) and not any(suffix in text for suffix in _NON_PERSON_SUFFIXES)
+
+
 def _resolved_phone(candidate: object, lid: object) -> Optional[str]:
     """Accept a resolved number only if it is not the LID wearing a disguise.
 
@@ -558,6 +571,54 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             await self.db.customers.update_one({"_id": keep_id}, {"$set": update})
         await self.db.customers.delete_one({"_id": drop_id})
 
+    async def backfill_contact_names(self, user_id: str, limit: int = 200) -> dict:
+        """Ask WhatsApp for the real name of contacts still showing a placeholder.
+
+        A name like "Contact 3665" is one we invented because nothing better was
+        known at the time. WhatsApp usually does know - under the saved name, the
+        push name, or the short name - so ask rather than leave the business
+        looking at a number-shaped label it cannot recognise.
+        """
+        session, base_url = await self._session_and_node(user_id)
+        candidates = await self.db.customers.find(
+            {"user_id": user_id},
+            {"_id": 1, "name": 1, "phone_number": 1, "lid_jid": 1},
+        ).to_list(2000)
+        candidates = [c for c in candidates if _is_placeholder_name(c.get("name"))][:limit]
+
+        renamed = 0
+        async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
+            for customer in candidates:
+                lid = customer.get("lid_jid")
+                phone = _digits(str(customer.get("phone_number") or ""))
+                contact_id = lid if _is_lid_jid(lid) else (_chat_id(phone) if phone else None)
+                if not contact_id:
+                    continue
+                try:
+                    response = await client.get(
+                        f"{base_url}/api/contacts",
+                        headers=self._headers(),
+                        params={"contactId": contact_id, "session": session},
+                    )
+                    if response.status_code != 200:
+                        continue
+                    record = response.json() or {}
+                except Exception as exc:
+                    logger.debug("[waha.backfill_contact_names] %s", exc)
+                    continue
+
+                for field in ("name", "pushname", "pushName", "shortName", "verifiedName"):
+                    name = str(record.get(field) or "").strip()
+                    # Only accept something a person would recognise; the API
+                    # happily returns the number back as a "name".
+                    if name and not _is_placeholder_name(name):
+                        await self.db.customers.update_one(
+                            {"_id": customer["_id"]}, {"$set": {"name": name}}
+                        )
+                        renamed += 1
+                        break
+        return {"checked": len(candidates), "renamed": renamed}
+
     async def verify_suspicious_numbers(self, user_id: str, limit: int = 50) -> dict:
         """Blank stored numbers WhatsApp does not recognise as real.
 
@@ -691,14 +752,48 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         # Contacts whose number came from a LID but which never recorded that
         # LID cannot be caught above; ask WhatsApp about the few that look wrong.
         verified = await self.verify_suspicious_numbers(user_id)
+        removed = await self.remove_non_person_contacts(user_id)
+        named = await self.backfill_contact_names(user_id)
         return {
             "status": "success",
             "contacts_checked": len(mappings),
             "repaired": repaired + verified["corrected"],
             "merged": merged,
             "number_unavailable": unavailable + verified["cleared"],
+            "renamed": named["renamed"],
+            "removed_non_person": removed,
             "verified": verified,
         }
+
+    async def remove_non_person_contacts(self, user_id: str) -> int:
+        """Drop contacts that are really a channel, group or broadcast.
+
+        A WhatsApp Channel arrives shaped like a chat, so one was saved as a
+        contact and its posts became a conversation nobody can reply to. Only
+        remove a contact whose every message came from such a chat, so a real
+        person who also appears in a group is never touched.
+        """
+        removed = 0
+        pipeline = [
+            {"$match": {"user_id": user_id, "remote_jid": {"$regex": r"@(?:newsletter|g\.us|broadcast|status)"}}},
+            {"$group": {"_id": "$customer_id"}},
+        ]
+        async for row in self.db.messages.aggregate(pipeline):
+            customer_id = row.get("_id")
+            if not customer_id:
+                continue
+            person_messages = await self.db.messages.count_documents({
+                "user_id": user_id, "customer_id": customer_id,
+                "remote_jid": {"$not": {"$regex": r"@(?:newsletter|g\.us|broadcast|status)"}},
+            })
+            if person_messages:
+                continue    # a real person who also appears in one of these
+            await self.db.messages.delete_many(
+                {"user_id": user_id, "customer_id": customer_id})
+            result = await self.db.customers.delete_one(
+                {"_id": customer_id, "user_id": user_id})
+            removed += getattr(result, "deleted_count", 0) or 0
+        return removed
 
     async def _start_session(self, base_url: str, instance_name: str, config: dict) -> dict:
         """Create/update/start a session without deleting an existing auth state."""
@@ -1143,7 +1238,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                         if contact.get("isGroup") or contact.get("isMe"):
                             continue
                         contact_id = str(contact.get("id") or "")
-                        if not contact_id or "@g.us" in contact_id or "@broadcast" in contact_id:
+                        if not _is_person_chat(contact_id):
                             continue
                         if contact_id in seen_ids:
                             continue
@@ -1347,7 +1442,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             imported = 0
             for chat in chats if isinstance(chats, list) else []:
                 chat_id = str(chat.get("id") or "")
-                if not chat_id or "@g.us" in chat_id or "@broadcast" in chat_id:
+                if not _is_person_chat(chat_id):
                     continue
                 imported += await self._import_messages(user_id, session, chat_id, min(limit, 50))
             return {"status": "success", "messages_imported": imported}
@@ -1542,7 +1637,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             return None
         from_me = bool(data.get("fromMe", False))
         remote_jid = str(data.get("chatId") or (data.get("to") if from_me else data.get("from")) or "")
-        if not remote_jid or "@g.us" in remote_jid or "@broadcast" in remote_jid:
+        if not _is_person_chat(remote_jid):
             return None
 
         # LID JIDs carry an opaque identity, not a real phone number. The engine
