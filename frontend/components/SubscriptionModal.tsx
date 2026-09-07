@@ -128,7 +128,14 @@ export default function SubscriptionModal({
     while (Date.now() < deadline) {
       try {
         const statusResponse = await apiClient.get('/subscription/status');
-        if (statusResponse.data?.subscription_active) return true;
+        // Wait for the entitlement that actually opens the product, not the
+        // raw subscription flag. An account can carry subscription_active
+        // with no plan behind it, which reads as success here and is then
+        // refused at the door - reporting a subscription found and bouncing
+        // straight back to the payment screen.
+        if (statusResponse.data?.dashboard_access || statusResponse.data?.paid_active) {
+          return true;
+        }
       } catch (statusErr) {
         console.warn('Could not read subscription status:', statusErr);
       }

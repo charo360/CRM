@@ -367,8 +367,22 @@ export default function AccountScreen() {
       // with no WhatsApp in it, which is the one thing it is for.
       const statusResponse = await apiClient.get('/subscription/status');
       const paid = Boolean(statusResponse.data?.paid_active);
-      const entitled = paid || Boolean(statusResponse.data?.dashboard_access);
+      let entitled = paid || Boolean(statusResponse.data?.dashboard_access);
       setPaidSubscriptionActive(paid);
+
+      if (!entitled) {
+        // Before asking anyone for a card, start the free trial they are
+        // entitled to. Accounts created before the trial existed have never
+        // had one, and the endpoint has always been able to grant it — the app
+        // simply never asked, and sent people to Google Play instead.
+        try {
+          await apiClient.post('/subscription/start-trial');
+          entitled = true;
+        } catch (trialError: any) {
+          // Already used, or already subscribed: fall through to the paid flow.
+          console.log('Free trial unavailable:', trialError?.response?.data?.detail);
+        }
+      }
 
       if (!entitled) {
         showWhatsAppTrial();

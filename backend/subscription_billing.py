@@ -20,8 +20,6 @@ from entitlements import (
     normalize_plan_id,
     paid_subscription_active,
     provision_signup_trial,
-    trial_end_from_start,
-    trial_provision_update,
 )
 
 PLAN_DISPLAY_NAMES = {"starter": "Starter", "standard": "Growth", "pro": "Pro"}
@@ -111,19 +109,24 @@ def register_subscription_billing_routes(
         record = await db.users.find_one({"_id": owner_id})
         if not record:
             raise HTTPException(status_code=404, detail="User not found")
-        if record.get("trial_started_at"):
-            raise HTTPException(status_code=400, detail="Free trial already used for this account")
         if record.get("subscription_active") and normalize_plan_id(record.get("subscription_plan")) in PAID_PLAN_IDS:
             raise HTTPException(status_code=400, detail="You already have an active subscription")
-        started = datetime.utcnow()
-        ends = trial_end_from_start(started)
-        await db.users.update_one(
-            {"_id": owner_id},
-            {"$set": trial_provision_update(started)},
-        )
+
+        # Delegate rather than repeat the rules. This path used to decide for
+        # itself, so it could hand out a fresh window to someone whose trial had
+        # already run - the signup path and this one disagreeing about the same
+        # question. One of them has to be the answer.
+        if not await provision_signup_trial(db, owner_id):
+            raise HTTPException(status_code=400, detail="Free trial already used for this account")
+
         updated = await db.users.find_one({"_id": owner_id})
         ent = await build_entitlements(db, updated)
-        return {"status": "ok", "trial_days": TRIAL_DAYS, "trial_ends_at": ends, **ent}
+        return {
+            "status": "ok",
+            "trial_days": TRIAL_DAYS,
+            "trial_ends_at": (updated or {}).get("trial_ends_at"),
+            **ent,
+        }
 
     @api_router.post("/subscription/checkout")
     async def checkout(body: CheckoutBody, user=Depends(get_current_user)):
