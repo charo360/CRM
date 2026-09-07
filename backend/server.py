@@ -9292,6 +9292,13 @@ async def delete_account(request: Request):
     await db.customer_groups.delete_many({"user_id": user_id})
     await db.followup_events.delete_many({"user_id": user_id})
     await db.conversation_memory.delete_many({"user_id": user_id})
+    # Also keyed to this business's contacts; without these the account's
+    # conversation state, loyalty balances and feedback records outlive the
+    # deletion this endpoint promises.
+    await db.conversation_states.delete_many({"user_id": user_id})
+    await db.loyalty_members.delete_many({"user_id": user_id})
+    await db.loyalty_transactions.delete_many({"user_id": user_id})
+    await db.feedback_deliveries.delete_many({"user_id": user_id})
     await db.activity_logs.delete_many({"business_id": user_id})
     await db.conversation_assignments.delete_many({"business_id": user_id})
     await db.team_members.delete_many({"business_id": user_id})

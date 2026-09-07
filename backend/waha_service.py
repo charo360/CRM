@@ -1209,11 +1209,13 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         created = updated = without_number = 0
         seen = 0
         seen_ids: set[str] = set()
-        # Older WAHA builds have no bulk LID table. Falling back to one request
-        # per contact would stall the sync on a large address book, so spend a
-        # bounded number of them; the rest import against their LID and get a
-        # number later from an inbound message or the repair pass.
-        lookup_budget = 0 if lid_map else 200
+        # The bulk LID table is often partial on a freshly linked account, and
+        # older WAHA builds have none at all. Either way the contacts missing
+        # from it deserve an individual lookup - but one request each would
+        # stall the sync on a large address book, so spend a bounded number.
+        # Whatever is left imports against its LID and picks up a number later
+        # from an inbound message or the repair pass.
+        lookup_budget = 200
         page, offset = 500, 0
         try:
             async with httpx.AsyncClient(timeout=60, verify=self.verify_ssl) as client:
