@@ -9732,6 +9732,17 @@ async def whatsapp_sync(user = Depends(get_current_user)):
     history_result = await whatsapp_service.fetch_chat_history(user["_id"])
     logging.info(f"History sync result: {history_result}")
 
+    # Resolve numbers WhatsApp did not hand over on the first pass and fold any
+    # duplicate that resolution reveals. The background pass is claimed once an
+    # hour, so this button is the only way to ask for it on demand.
+    repair_result = {}
+    if hasattr(whatsapp_service, "repair_lid_contacts"):
+        try:
+            repair_result = await whatsapp_service.repair_lid_contacts(user["_id"])
+            logging.info(f"LID repair result: {repair_result}")
+        except Exception as repair_err:
+            logging.warning(f"LID repair during sync failed: {repair_err}")
+
     await db.users.update_one(
         {"_id": user["_id"]},
         {"$set": {
@@ -9776,6 +9787,7 @@ async def whatsapp_sync(user = Depends(get_current_user)):
         "status": "success",
         "contacts": contacts_result,
         "history": history_result,
+        "repair": repair_result,
         "totals": {
             "customers": total_customers,
             "messages": total_messages,

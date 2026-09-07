@@ -459,6 +459,67 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             logger.debug("[waha._phone_from_chat_messages] %s", exc)
         return None
 
+    # Everything that points at a contact by id. A merge that misses one of
+    # these orphans real work - an order, a loyalty balance, a conversation's
+    # state - against a contact row that no longer exists.
+    CUSTOMER_LINKED_COLLECTIONS = (
+        "messages", "orders", "followups", "conversation_states",
+        "conversation_assignments", "customer_analysis", "pending_classifications",
+        "loyalty_members", "loyalty_transactions", "feedback_deliveries",
+    )
+
+    @staticmethod
+    def _merged_contact_fields(keep: dict, drop: dict) -> dict:
+        """Combine two records for one person without discarding either's work."""
+        update: dict = {}
+        if _is_placeholder_name(keep.get("name")) and not _is_placeholder_name(drop.get("name")):
+            update["name"] = drop["name"]
+        if not keep.get("profile_picture") and drop.get("profile_picture"):
+            update["profile_picture"] = drop["profile_picture"]
+        if not str(keep.get("notes") or "").strip() and str(drop.get("notes") or "").strip():
+            update["notes"] = drop["notes"]
+        # A promotion to customer, or a stage the business set, must survive.
+        if drop.get("is_customer") and not keep.get("is_customer"):
+            update["is_customer"] = True
+        if keep.get("stage", "lead") == "lead" and drop.get("stage") not in (None, "", "lead"):
+            update["stage"] = drop["stage"]
+        tags = list(dict.fromkeys((keep.get("tags") or []) + (drop.get("tags") or [])))
+        if tags != (keep.get("tags") or []):
+            update["tags"] = tags
+        for field in ("last_contacted", "last_owner_reply"):
+            mine, theirs = keep.get(field), drop.get(field)
+            if theirs and (not mine or theirs > mine):
+                update[field] = theirs
+        # The preview must belong to whichever conversation spoke last.
+        if (drop.get("last_message") and drop.get("last_contacted")
+                and (not keep.get("last_contacted")
+                     or drop["last_contacted"] > keep["last_contacted"])):
+            update["last_message"] = drop["last_message"]
+        for field in ("purchase_count", "total_spent"):
+            combined = (keep.get(field) or 0) + (drop.get(field) or 0)
+            if combined != (keep.get(field) or 0):
+                update[field] = combined
+        return update
+
+    async def merge_duplicate_contacts(self, user_id: str, keep: dict, drop: dict) -> None:
+        """Fold one contact into another, moving every reference that exists."""
+        keep_id, drop_id = keep["_id"], drop["_id"]
+        if keep_id == drop_id:
+            return
+        for collection in self.CUSTOMER_LINKED_COLLECTIONS:
+            try:
+                await self.db[collection].update_many(
+                    {"customer_id": drop_id}, {"$set": {"customer_id": keep_id}}
+                )
+            except Exception as exc:
+                # A unique index can refuse a move; keep going so one awkward
+                # collection cannot abandon the merge halfway.
+                logger.warning("[waha.merge] %s for %s: %s", collection, drop_id, exc)
+        update = self._merged_contact_fields(keep, drop)
+        if update:
+            await self.db.customers.update_one({"_id": keep_id}, {"$set": update})
+        await self.db.customers.delete_one({"_id": drop_id})
+
     async def repair_lid_contacts(self, user_id: str) -> dict:
         """Repair contacts previously saved with a LID as their phone number.
 
@@ -512,17 +573,22 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 "$or": [{"phone_number": phone}, {"phone_number": f"+{phone}"}],
             })
             if duplicate:
-                # Keep one contact and move its complete message history there.
-                await self.db.messages.update_many(
-                    {"user_id": user_id, "customer_id": customer_id},
-                    {"$set": {"customer_id": duplicate["_id"]}},
+                # Keep whichever record the business has actually been using.
+                # Discarding the one that holds the conversation is what made a
+                # merged contact open an empty chat.
+                mine = await self.db.messages.count_documents(
+                    {"user_id": user_id, "customer_id": customer_id})
+                theirs = await self.db.messages.count_documents(
+                    {"user_id": user_id, "customer_id": duplicate["_id"]})
+                keep, drop = (
+                    (customer, duplicate) if mine >= theirs else (duplicate, customer)
                 )
-                merged_tags = list(dict.fromkeys((duplicate.get("tags") or []) + (customer.get("tags") or [])))
-                update = {"tags": merged_tags, "lid_jid": lid}
-                if not duplicate.get("profile_picture") and customer.get("profile_picture"):
-                    update["profile_picture"] = customer["profile_picture"]
-                await self.db.customers.update_one({"_id": duplicate["_id"]}, {"$set": update})
-                await self.db.customers.delete_one({"_id": customer_id})
+                await self.merge_duplicate_contacts(user_id, keep, drop)
+                await self.db.customers.update_one(
+                    {"_id": keep["_id"]},
+                    {"$set": {"phone_number": phone, "lid_jid": lid},
+                     "$unset": {"phone_number_unavailable": ""}},
+                )
                 merged += 1
             else:
                 await self.db.customers.update_one(

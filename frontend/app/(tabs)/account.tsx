@@ -180,10 +180,20 @@ export default function AccountScreen() {
       const created = res?.contacts?.created ?? 0;
       const hidden = res?.contacts?.without_number ?? 0;
       const messages = res?.history?.messages_imported ?? 0;
+      const recovered = res?.repair?.repaired ?? 0;
+      const merged = res?.repair?.merged ?? 0;
+      const extra: string[] = [];
+      if (recovered) extra.push(`${recovered} number${recovered === 1 ? '' : 's'} recovered.`);
+      if (merged) extra.push(`${merged} duplicate contact${merged === 1 ? '' : 's'} merged.`);
+      if (hidden) {
+        extra.push(
+          `${hidden} contact${hidden === 1 ? '' : 's'} still without a number — WhatsApp has not shared it yet.`,
+        );
+      }
       Alert.alert(
         'Sync complete',
         `${created} new contact${created === 1 ? '' : 's'} and ${messages} message${messages === 1 ? '' : 's'} imported.` +
-          (hidden ? `\n\n${hidden} contact${hidden === 1 ? '' : 's'} kept without a number because WhatsApp does not share it.` : ''),
+          (extra.length ? `\n\n${extra.join('\n')}` : ''),
       );
     } catch (error: any) {
       Alert.alert('Sync failed', error.response?.data?.detail || 'Could not sync WhatsApp right now.');

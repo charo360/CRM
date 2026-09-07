@@ -69,6 +69,24 @@ class FakeCollection:
     async def insert_one(self, document):
         self.rows.append(dict(document))
 
+    async def count_documents(self, query):
+        return sum(1 for row in self.rows if self._matches(row, query))
+
+    async def update_many(self, query, operation):
+        changed = 0
+        for row in self.rows:
+            if self._matches(row, query):
+                for key, value in (operation.get("$set") or {}).items():
+                    self._set_path(row, key, value)
+                changed += 1
+        return type("R", (), {"modified_count": changed})()
+
+    async def delete_one(self, query):
+        for i, row in enumerate(self.rows):
+            if self._matches(row, query):
+                self.rows.pop(i)
+                return
+
     def aggregate(self, pipeline):
         """Support the $match + $group shape the repair pass uses."""
         rows = [dict(r) for r in self.rows]
@@ -132,10 +150,17 @@ class FakeCollection:
 
 
 class FakeDb:
-    def __init__(self, users=None, customers=None, messages=None):
+    def __init__(self, users=None, customers=None, messages=None, **extra):
         self.users = FakeCollection(users)
         self.customers = FakeCollection(customers)
         self.messages = FakeCollection(messages)
+        self._extra = {name: FakeCollection(rows) for name, rows in extra.items()}
+
+    def __getitem__(self, name):
+        """Mirror Mongo's db["collection"], creating unknown ones empty."""
+        if hasattr(self, name) and isinstance(getattr(self, name), FakeCollection):
+            return getattr(self, name)
+        return self._extra.setdefault(name, FakeCollection())
 
 
 class FakeResponse:
@@ -549,3 +574,112 @@ def test_repair_recovers_a_number_the_lids_endpoint_will_not_give():
     saved = db.customers.rows[0]
     assert saved["phone_number"] == "254712345678"
     assert "phone_number_unavailable" not in saved
+
+
+# ── Merging duplicate contacts ─────────────────────────────────────────────
+
+def _merge_fixture():
+    """The real shape seen in production: a LID record holding the whole
+    conversation, and a second record carrying only the phone number."""
+    lid_record = {
+        "_id": "lid-rec", "user_id": "biz-1", "name": "Sarcharo",
+        "phone_number": "", "lid_jid": "13444002652393@lid",
+        "phone_number_unavailable": True, "is_customer": True,
+        "profile_picture": "https://waha.test/pic.jpg", "tags": ["New"],
+        "stage": "negotiating", "notes": "asked about delivery",
+        "last_message": "see you then", "last_contacted": 200,
+        "purchase_count": 2, "total_spent": 50.0,
+    }
+    phone_record = {
+        "_id": "num-rec", "user_id": "biz-1", "name": "sarcharo",
+        "phone_number": "+12026995029", "is_customer": False,
+        "tags": ["Synced"], "stage": "lead", "last_contacted": 100,
+        "purchase_count": 1, "total_spent": 25.0,
+    }
+    return lid_record, phone_record
+
+
+def test_merge_keeps_the_record_holding_the_conversation():
+    lid_record, phone_record = _merge_fixture()
+    db = FakeDb(
+        users=[USER], customers=[lid_record, phone_record],
+        messages=[{"_id": f"m{i}", "user_id": "biz-1", "customer_id": "lid-rec",
+                   "remote_jid": "13444002652393@lid"} for i in range(85)],
+    )
+    routes = {
+        "/lids": lambda p: FakeResponse({"lid": "13444002652393@lid", "pn": None}),
+        "/messages": lambda p: [
+            {"id": "x", "fromMe": True,
+             "_data": {"Info": {"SenderAlt": "12026995029@s.whatsapp.net",
+                                "RecipientAlt": "12026995029@s.whatsapp.net"}}},
+        ],
+    }
+    result, _ = run(db, routes, lambda s: s.repair_lid_contacts("biz-1"))
+
+    assert result["merged"] == 1, result
+    assert len(db.customers.rows) == 1
+    survivor = db.customers.rows[0]
+    assert survivor["_id"] == "lid-rec"          # the one with the 85 messages
+    assert survivor["phone_number"] == "12026995029"
+    assert "phone_number_unavailable" not in survivor
+    # Every message still points at the surviving contact.
+    assert all(m["customer_id"] == "lid-rec" for m in db.messages.rows)
+
+
+def test_merge_preserves_work_from_both_records():
+    lid_record, phone_record = _merge_fixture()
+    # Flip which side carries the promotion and the picture.
+    lid_record["is_customer"] = False
+    lid_record["profile_picture"] = None
+    phone_record["is_customer"] = True
+    phone_record["profile_picture"] = "https://waha.test/other.jpg"
+
+    db = FakeDb(users=[USER], customers=[lid_record, phone_record],
+                messages=[{"_id": "m1", "user_id": "biz-1", "customer_id": "lid-rec",
+                           "remote_jid": "13444002652393@lid"}])
+    routes = {
+        "/lids": lambda p: FakeResponse({"lid": "13444002652393@lid", "pn": None}),
+        "/messages": lambda p: [
+            {"id": "x", "fromMe": True,
+             "_data": {"Info": {"SenderAlt": "12026995029@s.whatsapp.net",
+                                "RecipientAlt": "12026995029@s.whatsapp.net"}}},
+        ],
+    }
+    run(db, routes, lambda s: s.repair_lid_contacts("biz-1"))
+
+    survivor = db.customers.rows[0]
+    assert survivor["is_customer"] is True                       # promotion kept
+    assert survivor["profile_picture"] == "https://waha.test/other.jpg"
+    assert survivor["stage"] == "negotiating"                    # richer stage kept
+    assert survivor["notes"] == "asked about delivery"
+    assert set(survivor["tags"]) == {"New", "Synced"}            # tags unioned
+    assert survivor["purchase_count"] == 3                       # 2 + 1
+    assert survivor["total_spent"] == 75.0                       # 50 + 25
+
+
+def test_merge_repoints_orders_and_loyalty_not_just_messages():
+    """Orders and loyalty are money; orphaning them loses real records."""
+    lid_record, phone_record = _merge_fixture()
+    db = FakeDb(
+        users=[USER], customers=[lid_record, phone_record],
+        messages=[{"_id": "m1", "user_id": "biz-1", "customer_id": "lid-rec",
+                   "remote_jid": "13444002652393@lid"}],
+        orders=[{"_id": "o1", "customer_id": "num-rec", "total": 25.0}],
+        loyalty_transactions=[{"_id": "l1", "customer_id": "num-rec", "points": 10}],
+        customer_analysis=[{"_id": "a1", "customer_id": "num-rec"}],
+        conversation_states=[{"_id": "s1", "customer_id": "num-rec"}],
+    )
+    routes = {
+        "/lids": lambda p: FakeResponse({"lid": "13444002652393@lid", "pn": None}),
+        "/messages": lambda p: [
+            {"id": "x", "fromMe": True,
+             "_data": {"Info": {"SenderAlt": "12026995029@s.whatsapp.net",
+                                "RecipientAlt": "12026995029@s.whatsapp.net"}}},
+        ],
+    }
+    run(db, routes, lambda s: s.repair_lid_contacts("biz-1"))
+
+    for name in ("orders", "loyalty_transactions", "customer_analysis",
+                 "conversation_states"):
+        rows = db[name].rows
+        assert rows and all(r["customer_id"] == "lid-rec" for r in rows), name
