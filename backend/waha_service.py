@@ -70,6 +70,34 @@ def _region_proxies(raw: str) -> dict[str, dict[str, str]]:
 WAHA_REGION_PROXIES = _region_proxies(os.environ.get("WAHA_REGION_PROXIES_JSON", ""))
 
 
+def _region_nodes(raw: str) -> dict[str, str]:
+    """Parse the optional country-to-WAHA-node routing table.
+
+    The primary URL list remains the source of truth for stored ``waha_node``
+    indexes. This mapping only selects one of those URLs when a business is
+    paired for the first time, so adding a regional node cannot move an active
+    WhatsApp session behind its back.
+    """
+    try:
+        configured = json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        logger.warning("[waha] WAHA_REGION_NODES_JSON is not valid JSON")
+        return {}
+    if not isinstance(configured, dict):
+        return {}
+    result: dict[str, str] = {}
+    for country, value in configured.items():
+        if not isinstance(country, str) or not isinstance(value, str):
+            continue
+        url = value.strip().rstrip("/")
+        if url.startswith(("https://", "http://")):
+            result[country.strip().upper()] = url
+    return result
+
+
+WAHA_REGION_NODES = _region_nodes(os.environ.get("WAHA_REGION_NODES_JSON", ""))
+
+
 def waha_config_error() -> Optional[str]:
     """Return a safe configuration error instead of leaking WAHA credentials."""
     if not WAHA_NODE_URLS:
@@ -310,10 +338,33 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         """Keep every business on one node across calls and deployments."""
         if not self.node_urls:
             raise RuntimeError("WAHA_API_URL is not configured")
-        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp.waha_node": 1})
+        user = await self.db.users.find_one(
+            {"_id": user_id},
+            {
+                "whatsapp.waha_node": 1,
+                "country_code": 1,
+                "settings.country_code": 1,
+            },
+        )
         stored = (user or {}).get("whatsapp", {}).get("waha_node")
         if isinstance(stored, int) and 0 <= stored < len(self.node_urls):
             return stored, self.node_urls[stored]
+
+        # Use a country's dedicated node only for the first pairing. The
+        # selected index is persisted by the pairing routes below, so a later
+        # country edit or deployment cannot switch an established device.
+        settings = (user or {}).get("settings") or {}
+        region = str(
+            (user or {}).get("country_code") or settings.get("country_code") or ""
+        ).strip().upper()
+        region_url = WAHA_REGION_NODES.get(region)
+        if region_url:
+            try:
+                return self.node_urls.index(region_url), region_url
+            except ValueError:
+                logger.warning(
+                    "[waha] regional node for %s is not in WAHA_API_URLS", region
+                )
         # A stable, even distribution means an existing account never switches
         # nodes merely because the process restarts.
         index = int(hashlib.sha256(str(user_id).encode("utf-8")).hexdigest(), 16) % len(self.node_urls)
