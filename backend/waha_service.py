@@ -123,6 +123,57 @@ def _is_placeholder_name(value: object) -> bool:
     return bool(_PLACEHOLDER_NAME.match(str(value or "").strip()))
 
 
+_PHONE_JID_RE = re.compile(r"(\d{6,15})@(?:s\.whatsapp\.net|c\.us)")
+
+
+def _phone_from_jid(value: object) -> Optional[str]:
+    """Return the digits of a phone-shaped JID, or None if it is not one."""
+    match = _PHONE_JID_RE.fullmatch(str(value or "").strip())
+    return match.group(1) if match else None
+
+
+def _dig(payload: object, *path: str) -> object:
+    """Walk a nested payload, tolerating the casing differences between engines."""
+    current = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = {str(k).lower(): v for k, v in current.items()}.get(key.lower())
+    return current
+
+
+def _payload_phone(data: dict, from_me: bool, own_number: str = "") -> Optional[str]:
+    """Read the contact's real number straight out of the engine payload.
+
+    WAHA's GOWS engine resolves a LID against WhatsApp's own LID store and puts
+    the resulting phone JID in ``_data.Info.SenderAlt``. The message we are
+    already holding therefore carries the answer, while the ``/lids`` endpoint
+    returns null for most contacts. Prefer the payload and keep the API call as
+    a fallback.
+
+    For a message we sent, the contact is the recipient rather than the sender,
+    so the owner's own number is skipped wherever it appears.
+    """
+    own = _digits(own_number)
+    ordered = (
+        ("RecipientAlt", "SenderAlt") if from_me else ("SenderAlt", "RecipientAlt")
+    )
+    candidates = (
+        _dig(data, "_data", "Info", ordered[0]),
+        _dig(data, "_data", "Info", ordered[1]),
+        _dig(data, "participant", "pn"),
+        data.get("participantPn"),
+        _dig(data, "_data", "key", "senderPn"),
+        _dig(data, "_data", "key", "participantPn"),
+        data.get("to") if from_me else data.get("from"),
+    )
+    for candidate in candidates:
+        phone = _phone_from_jid(candidate)
+        if phone and _is_phone_like(phone) and phone != own:
+            return phone
+    return None
+
+
 def _message_type(media: Optional[dict]) -> str:
     if not media:
         return "text"
@@ -376,6 +427,9 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         WhatsApp intentionally withholds some mappings, so guessing a number
         would be worse than showing no number.
         """
+        # Prime the LID cache in bulk; otherwise every contact below costs its
+        # own round trip and the repair stalls on a large address book.
+        await self._lid_phone_map(user_id)
         mappings: dict[str, str] = {}
         pipeline = [
             {"$match": {"user_id": user_id, "remote_jid": {"$regex": r"^[0-9]+@lid$"}}},
@@ -1007,6 +1061,28 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             if response.status_code != 200:
                 return 0
             messages = response.json()
+            # History messages carry the same engine payload as live webhooks,
+            # so a LID chat WhatsApp would not resolve over the API often
+            # resolves here — and back-fills the contact that was saved without
+            # a number.
+            if is_lid and not phone:
+                own_number = str(
+                    ((await self.db.users.find_one({"_id": user_id}, {"whatsapp.phone_number": 1})
+                      or {}).get("whatsapp") or {}).get("phone_number") or ""
+                )
+                for item in messages if isinstance(messages, list) else []:
+                    found = _payload_phone(item, bool(item.get("fromMe")), own_number)
+                    if found:
+                        phone = found
+                        self._lid_phone_cache[chat_id] = (
+                            phone, datetime.utcnow().timestamp() + 600
+                        )
+                        await self.db.customers.update_one(
+                            {"_id": customer["_id"], "phone_number": {"$in": ["", None]}},
+                            {"$set": {"phone_number": phone},
+                             "$unset": {"phone_number_unavailable": ""}},
+                        )
+                        break
             imported = 0
             for item in messages if isinstance(messages, list) else []:
                 provider_id = item.get("id")
@@ -1249,11 +1325,28 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         if not remote_jid or "@g.us" in remote_jid or "@broadcast" in remote_jid:
             return None
 
-        # LID JIDs carry an opaque identity, not a real phone number. Ask WAHA to
-        # resolve it so the CRM never stores a fabricated number again.
+        # LID JIDs carry an opaque identity, not a real phone number. The engine
+        # has usually already resolved it against WhatsApp's LID store and put
+        # the answer in the payload, so read that before asking the /lids
+        # endpoint, which returns null for most contacts.
         is_lid = _is_lid_jid(remote_jid)
         if is_lid:
-            phone = await self._resolve_lid_phone(user["_id"], remote_jid)
+            own_number = str((user.get("whatsapp") or {}).get("phone_number") or "")
+            phone = from_payload = _payload_phone(data, from_me, own_number)
+            if phone:
+                # Share the discovery with every other lookup for this contact.
+                self._lid_phone_cache[remote_jid] = (
+                    phone, datetime.utcnow().timestamp() + 600
+                )
+            else:
+                phone = await self._resolve_lid_phone(user["_id"], remote_jid)
+            # Say which route answered, so a silent regression in either is
+            # visible in the logs rather than only as blank numbers in the app.
+            logger.info(
+                "[waha.lid] %s -> %s (via=%s)",
+                remote_jid, phone or "unresolved",
+                "payload" if from_payload else ("lids-api" if phone else "none"),
+            )
         else:
             phone = _digits(_jid_to_phone(remote_jid))
             if not _is_phone_like(phone):

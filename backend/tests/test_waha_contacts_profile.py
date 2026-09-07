@@ -381,3 +381,64 @@ def test_history_falls_back_to_the_phone_chat_for_a_normal_contact():
     assert result["messages_imported"] == 1
     assert db.messages.rows[0]["from_number"] == "254712345678"
     assert any("c.us" in url for url, _ in calls)
+
+
+# ── Reading the number out of the engine payload ───────────────────────────
+
+def test_gows_payload_yields_the_senders_real_number():
+    """GOWS resolves the LID itself and reports it as _data.Info.SenderAlt."""
+    from waha_service import _payload_phone
+    payload = {
+        "chatId": "99887766554433@lid",
+        "fromMe": False,
+        "from": "99887766554433@lid",
+        "_data": {"Info": {
+            "Chat": "99887766554433@lid",
+            "Sender": "99887766554433@lid",
+            "SenderAlt": "254712345678@s.whatsapp.net",
+        }},
+    }
+    assert _payload_phone(payload, from_me=False, own_number="254799999999") == "254712345678"
+
+
+def test_outgoing_message_takes_the_recipient_not_our_own_number():
+    """For a message we sent, SenderAlt is us - storing it would be wrong."""
+    from waha_service import _payload_phone
+    payload = {
+        "chatId": "99887766554433@lid",
+        "fromMe": True,
+        "to": "99887766554433@lid",
+        "_data": {"Info": {
+            "SenderAlt": "254799999999@s.whatsapp.net",   # the business itself
+            "RecipientAlt": "254712345678@s.whatsapp.net",  # the customer
+        }},
+    }
+    assert _payload_phone(payload, from_me=True, own_number="254799999999") == "254712345678"
+
+
+def test_owner_number_is_never_returned_as_the_contact():
+    from waha_service import _payload_phone
+    payload = {"_data": {"Info": {"SenderAlt": "254799999999@s.whatsapp.net"}}}
+    assert _payload_phone(payload, from_me=False, own_number="+254799999999") is None
+
+
+def test_group_participant_pn_is_accepted():
+    from waha_service import _payload_phone
+    payload = {"participant": {"pn": "254712345678@c.us"}}
+    assert _payload_phone(payload, from_me=False, own_number="") == "254712345678"
+
+
+def test_a_lid_is_never_mistaken_for_a_phone_number():
+    """The whole point: an opaque LID must not become a stored number."""
+    from waha_service import _payload_phone
+    payload = {
+        "from": "99887766554433@lid",
+        "_data": {"Info": {"Sender": "99887766554433@lid", "SenderAlt": ""}},
+    }
+    assert _payload_phone(payload, from_me=False, own_number="") is None
+
+
+def test_payload_lookup_is_case_insensitive_across_engines():
+    from waha_service import _payload_phone
+    payload = {"_data": {"info": {"senderalt": "254712345678@s.whatsapp.net"}}}
+    assert _payload_phone(payload, from_me=False, own_number="") == "254712345678"
