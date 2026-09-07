@@ -134,22 +134,54 @@ def test_whatsapp_closes_again_when_the_trial_runs_out():
 PHONE = "+16505553434"
 
 
-def test_deleting_and_signing_up_again_does_not_mint_a_second_trial():
-    """The abuse path: the per-account flag dies with the account.
+def test_returning_mid_trial_resumes_with_the_days_that_were_left():
+    """Delete on day two, come back on day three: eleven days remain.
 
-    Now that a trial also connects WhatsApp, a free re-registration would be a
-    free WAHA session for anyone willing to tap twice.
+    The trial is a window belonging to the person, not a token. Restarting it
+    would hand out free time for a couple of taps; refusing outright would take
+    back days they had not used.
     """
+    two_days_ago = datetime.utcnow() - timedelta(days=2)
     db = FakeDb([{"_id": "first", "phone_number": PHONE}])
+    db[TRIAL_GRANTS_COLLECTION].rows[trial_claim_id(PHONE)] = {
+        "_id": trial_claim_id(PHONE),
+        "trial_started_at": two_days_ago,
+        "trial_ends_at": two_days_ago + timedelta(days=TRIAL_DAYS),
+    }
+    # The account was deleted; this is a new one on the same number.
     assert asyncio.run(provision_signup_trial(db, "first")) is True
 
-    # The account is deleted and the same person signs up again: new id, same
-    # phone, no trace on the new record.
+    record = db.users.rows["first"]
+    assert has_dashboard_access(record) is True
+    # The clock kept running rather than restarting: same start, same deadline.
+    assert record["trial_started_at"] == two_days_ago
+    assert record["trial_ends_at"] == two_days_ago + timedelta(days=TRIAL_DAYS)
+
+
+def test_signing_up_again_does_not_restart_the_clock():
+    """The abuse path: a fresh fourteen days for anyone willing to tap twice."""
+    db = FakeDb([{"_id": "first", "phone_number": PHONE}])
+    assert asyncio.run(provision_signup_trial(db, "first")) is True
+    first_end = db.users.rows["first"]["trial_ends_at"]
+
     db.users.rows.pop("first")
     db.users.rows["second"] = {"_id": "second", "phone_number": PHONE}
+    assert asyncio.run(provision_signup_trial(db, "second")) is True
 
-    assert asyncio.run(provision_signup_trial(db, "second")) is False
-    assert "trial_started_at" not in db.users.rows["second"]
+    # Same deadline as the original trial, not a new one.
+    assert db.users.rows["second"]["trial_ends_at"] == first_end
+
+
+def test_a_window_that_has_run_out_is_not_reopened():
+    used = datetime.utcnow() - timedelta(days=TRIAL_DAYS + 3)
+    db = FakeDb([{"_id": "u1", "phone_number": PHONE}])
+    db[TRIAL_GRANTS_COLLECTION].rows[trial_claim_id(PHONE)] = {
+        "_id": trial_claim_id(PHONE),
+        "trial_started_at": used,
+        "trial_ends_at": used + timedelta(days=TRIAL_DAYS),
+    }
+    assert asyncio.run(provision_signup_trial(db, "u1")) is False
+    assert "trial_started_at" not in db.users.rows["u1"]
 
 
 def test_the_claim_survives_deletion_of_everything_else():

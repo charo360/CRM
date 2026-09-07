@@ -348,20 +348,35 @@ async def provision_signup_trial(db, owner_id: str) -> bool:
         return False
 
     # The per-account flag above cannot see a trial used by an account that has
-    # since been deleted, so deleting and signing up again minted a fresh
-    # fourteen days every time - and now that the trial also connects WhatsApp,
-    # that is a free session for anyone willing to tap twice.
+    # since been deleted, so the trial clock is kept against the person. It is a
+    # window, not a token: someone who starts a trial, deletes their account and
+    # returns two days later resumes with twelve days left. Restarting it would
+    # hand out free time for a couple of taps; refusing outright would take back
+    # days they had not used.
+    now = datetime.utcnow()
     claim = trial_claim_id(record.get("phone_number"))
+    started = now
     if claim:
         prior = await db[TRIAL_GRANTS_COLLECTION].find_one({"_id": claim})
         if prior:
-            return False
+            # Older claims recorded only when they were granted.
+            previous_start = prior.get("trial_started_at") or prior.get("granted_at")
+            if not isinstance(previous_start, datetime):
+                return False
+            if trial_end_from_start(previous_start) <= now:
+                return False    # the window has genuinely run out
+            started = previous_start
 
-    await db.users.update_one({"_id": owner_id}, {"$set": trial_provision_update()})
+    await db.users.update_one({"_id": owner_id}, {"$set": trial_provision_update(started)})
     if claim:
         await db[TRIAL_GRANTS_COLLECTION].update_one(
             {"_id": claim},
-            {"$set": {"granted_at": datetime.utcnow(), "last_owner_id": owner_id}},
+            {"$set": {
+                "trial_started_at": started,
+                "trial_ends_at": trial_end_from_start(started),
+                "last_owner_id": owner_id,
+                "last_claimed_at": now,
+            }},
             upsert=True,
         )
     return True
