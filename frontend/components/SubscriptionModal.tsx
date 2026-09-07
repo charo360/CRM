@@ -117,6 +117,51 @@ export default function SubscriptionModal({
     }
   };
 
+  /**
+   * Wait for the server to recognise a subscription Google Play already holds.
+   *
+   * Access is granted by the server, never by what the app can see, so this
+   * polls until the backend has heard the signed confirmation.
+   */
+  const waitForServerToConfirm = async (timeoutMs = 60000) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const statusResponse = await apiClient.get('/subscription/status');
+        if (statusResponse.data?.subscription_active) return true;
+      } catch (statusErr) {
+        console.warn('Could not read subscription status:', statusErr);
+      }
+      await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+    return false;
+  };
+
+  /**
+   * Adopt a subscription this Google account already owns.
+   *
+   * Play refuses a second purchase of a subscription it already holds, and the
+   * app used to surface that refusal as a bare error - so someone who deleted
+   * their account and signed up again was told to buy a subscription, then told
+   * they already had one, with no way past. Claiming the existing purchase is
+   * the correct move, and it is what the person meant to do anyway.
+   */
+  const adoptExistingSubscription = async (): Promise<boolean> => {
+    try {
+      const Purchases = require('react-native-purchases').default;
+      let info = await Purchases.getCustomerInfo();
+      if (!info.entitlements.active['premium']) {
+        // Not visible yet on this install; ask Play directly before giving up.
+        info = await Purchases.restorePurchases();
+      }
+      if (!info.entitlements.active['premium']) return false;
+      return await waitForServerToConfirm();
+    } catch (err) {
+      console.warn('Could not adopt an existing subscription:', err);
+      return false;
+    }
+  };
+
   const handlePurchase = async (plan: Plan) => {
     const isExpoGo = Constants.appOwnership === 'expo';
     if (isExpoGo || isPreviewBuild) {
@@ -151,6 +196,19 @@ export default function SubscriptionModal({
           );
           return;
         }
+      }
+
+      // This Google account may already hold a subscription - commonly after
+      // deleting a Zilo account and signing up again. Claim it instead of
+      // opening a checkout Play is going to refuse.
+      if (await adoptExistingSubscription()) {
+        Alert.alert(
+          'Subscription found',
+          'You already have an active Zilo subscription, so it has been linked to this account. No new charge was made.',
+        );
+        await onSuccess();
+        onClose();
+        return;
       }
 
       const offerings = await Purchases.getOfferings();
@@ -238,9 +296,32 @@ export default function SubscriptionModal({
         onClose();
       }
     } catch (error: any) {
-      if (!error.userCancelled) {
-        Alert.alert('Error', error.message || 'Purchase failed. Please try again.');
+      if (error.userCancelled) return;
+      // Play refuses to sell a subscription this account already owns. That is
+      // not a failure to report - it means the subscription exists and should
+      // be claimed.
+      const message = String(error?.message || '');
+      const alreadyOwned =
+        /already\s+(subscribed|own)/i.test(message) ||
+        error?.code === 'ProductAlreadyPurchasedError' ||
+        error?.underlyingErrorMessage?.includes('already');
+      if (alreadyOwned && (await adoptExistingSubscription())) {
+        Alert.alert(
+          'Subscription found',
+          'You already have an active Zilo subscription, so it has been linked to this account. No new charge was made.',
+        );
+        await onSuccess();
+        onClose();
+        return;
       }
+      if (alreadyOwned) {
+        Alert.alert(
+          'Already subscribed',
+          'Google Play says this account already has a Zilo subscription, but Zilo has not received the confirmation yet. Please try again in a minute.',
+        );
+        return;
+      }
+      Alert.alert('Error', message || 'Purchase failed. Please try again.');
     } finally {
       setPurchasing(false);
     }
@@ -263,20 +344,7 @@ export default function SubscriptionModal({
         // its signed webhook; until Zilo has heard that, nothing is restored —
         // saying otherwise leaves someone locked out while being told they are
         // not.
-        const deadline = Date.now() + 60000;
-        let confirmed = false;
-        while (Date.now() < deadline) {
-          try {
-            const statusResponse = await apiClient.get('/subscription/status');
-            if (statusResponse.data?.subscription_active) {
-              confirmed = true;
-              break;
-            }
-          } catch (statusErr) {
-            console.warn('Could not read subscription status while restoring:', statusErr);
-          }
-          await new Promise(resolve => setTimeout(resolve, 3000));
-        }
+        const confirmed = await waitForServerToConfirm();
 
         if (!confirmed) {
           Alert.alert(
