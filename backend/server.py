@@ -3036,8 +3036,26 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
         }
         await db.team_members.insert_one(team_member)
 
+    # Start the free trial the account is entitled to. Without this a new
+    # business lands with no trial and no subscription, so the first thing it
+    # is asked for is a payment method — and the only "trial" the app offered
+    # was the paid Google Play flow. The helper is one-time and refuses if a
+    # trial was already used or a paid subscription is active.
+    trial_started = False
+    try:
+        from entitlements import provision_signup_trial
+        trial_started = await provision_signup_trial(db, user["_id"])
+        if trial_started:
+            logging.info(f"Signup trial started for {user['_id']}")
+    except Exception as trial_error:
+        # Registration must still succeed; the trial can be started later.
+        logging.error(f"Could not start signup trial for {user['_id']}: {trial_error}")
+
+    fresh = await db.users.find_one({"_id": user["_id"]}) or user
+
     return serialize_doc({
         "status": "success",
+        "trial_started": trial_started,
         "user": {
             "id": user["_id"],
             "phone_number": user["phone_number"],
@@ -3046,7 +3064,9 @@ async def register_user(user_data: UserCreate, user = Depends(get_current_user))
             "setup_complete": True,
             "role": TeamMemberRole.OWNER,
             "business_id": user["_id"],
-            "subscription_active": user.get("subscription_active", False),
+            "trial_ends_at": fresh.get("trial_ends_at"),
+            "subscription_plan": fresh.get("subscription_plan"),
+            "subscription_active": fresh.get("subscription_active", False),
             "country_code": user.get("country_code"),
             "currency": user.get("currency", "USD"),
             "payment_methods": user.get("payment_methods", ["Cash", "Mobile Money", "Bank Transfer"]),
