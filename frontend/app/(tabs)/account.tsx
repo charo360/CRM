@@ -361,13 +361,16 @@ export default function AccountScreen() {
     }
     setCheckingWhatsAppAccess(true);
     try {
-      // Read the live entitlement before creating a WAHA pairing session.
-      // This avoids treating an old account flag as a completed Play payment.
+      // Read the live entitlement before creating a WAHA pairing session, so a
+      // stale account flag is never mistaken for a real one. An active free
+      // trial counts: asking for a card first meant the trial unlocked a CRM
+      // with no WhatsApp in it, which is the one thing it is for.
       const statusResponse = await apiClient.get('/subscription/status');
-      const hasConfirmedPaymentMethod = Boolean(statusResponse.data?.paid_active);
-      setPaidSubscriptionActive(hasConfirmedPaymentMethod);
+      const paid = Boolean(statusResponse.data?.paid_active);
+      const entitled = paid || Boolean(statusResponse.data?.dashboard_access);
+      setPaidSubscriptionActive(paid);
 
-      if (!hasConfirmedPaymentMethod) {
+      if (!entitled) {
         showWhatsAppTrial();
         return;
       }

@@ -9454,10 +9454,13 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     entitlements = await build_entitlements(db, user)
-    if not entitlements.get("paid_active"):
+    # An active free trial links WhatsApp just as a paid plan does. Requiring a
+    # card first meant the trial unlocked a CRM with no WhatsApp in it, which is
+    # the one thing the product is for.
+    if not entitlements.get("dashboard_access"):
         raise HTTPException(
             status_code=402,
-            detail="Start your Google Play subscription before connecting WhatsApp. Your free trial begins after Google Play confirms your payment method.",
+            detail="Your free trial has ended. Subscribe to keep WhatsApp connected.",
         )
 
     cfg_err = evolution_config_error()
@@ -9497,8 +9500,8 @@ async def whatsapp_refresh_pairing_code(request: Request, user = Depends(get_cur
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     entitlements = await build_entitlements(db, user)
-    if not entitlements.get("paid_active"):
-        raise HTTPException(status_code=402, detail="An active Zilo subscription is required to link WhatsApp.")
+    if not entitlements.get("dashboard_access"):
+        raise HTTPException(status_code=402, detail="Your free trial has ended. Subscribe to keep WhatsApp connected.")
 
     if cfg_err := evolution_config_error():
         raise HTTPException(status_code=503, detail=cfg_err)
@@ -9526,8 +9529,8 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
 
     entitlements = await build_entitlements(db, user)
-    if not entitlements.get("paid_active"):
-        raise HTTPException(status_code=402, detail="Start your Google Play subscription before connecting WhatsApp.")
+    if not entitlements.get("dashboard_access"):
+        raise HTTPException(status_code=402, detail="Your free trial has ended. Subscribe to keep WhatsApp connected.")
 
     cfg_err = evolution_config_error()
     if cfg_err:

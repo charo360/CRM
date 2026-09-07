@@ -83,3 +83,32 @@ def test_an_expired_trial_no_longer_grants_access():
         "subscription_active": False,
     }
     assert has_dashboard_access(record) is False
+
+
+def test_a_trial_is_enough_to_connect_whatsapp():
+    """The WhatsApp gates check dashboard_access, not paid_active.
+
+    Requiring a card first meant a trial unlocked a CRM with no WhatsApp in
+    it - the one thing the product is for.
+    """
+    started = datetime.utcnow()
+    trial_only = {
+        "_id": "u1",
+        "trial_started_at": started,
+        "trial_ends_at": started + timedelta(days=TRIAL_DAYS),
+        "subscription_active": False,
+        "subscription_plan": "trial",
+    }
+    assert has_dashboard_access(trial_only) is True
+
+
+def test_whatsapp_closes_again_when_the_trial_runs_out():
+    """Access has to end, or the gate is not a gate."""
+    past = datetime.utcnow() - timedelta(days=TRIAL_DAYS + 1)
+    expired = {
+        "_id": "u1",
+        "trial_started_at": past,
+        "trial_ends_at": past + timedelta(days=TRIAL_DAYS),
+        "subscription_active": False,
+    }
+    assert has_dashboard_access(expired) is False
