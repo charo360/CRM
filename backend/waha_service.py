@@ -1192,9 +1192,19 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                         self._lid_phone_cache[chat_id] = (
                             phone, datetime.utcnow().timestamp() + 600
                         )
+                        # The address-book sync may already hold this person
+                        # under the number we just resolved. Fold them together
+                        # rather than leaving the same contact listed twice.
+                        twin = await self.db.customers.find_one({
+                            "user_id": user_id,
+                            "_id": {"$ne": customer["_id"]},
+                            "$or": [{"phone_number": phone}, {"phone_number": f"+{phone}"}],
+                        })
+                        if twin:
+                            await self.merge_duplicate_contacts(user_id, customer, twin)
                         await self.db.customers.update_one(
-                            {"_id": customer["_id"], "phone_number": {"$in": ["", None]}},
-                            {"$set": {"phone_number": phone},
+                            {"_id": customer["_id"]},
+                            {"$set": {"phone_number": phone, "lid_jid": chat_id},
                              "$unset": {"phone_number_unavailable": ""}},
                         )
                         break

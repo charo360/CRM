@@ -10719,29 +10719,53 @@ async def evolution_webhook(request: Request):
             remote_jid_val = parsed.get("remote_jid", "")
             number_unavailable = bool(parsed.get("phone_number_unavailable"))
             customer_name = push_name or ("WhatsApp contact" if number_unavailable else f"Contact {from_number[-4:]}")
-            customer = await db.customers.find_one(
-                {"user_id": user["_id"], "lid_jid": remote_jid_val}
-                if number_unavailable else {"user_id": user["_id"], **_phone_match_clause(from_number)}
-            )
-
-            # If the incoming JID is a LID, a previous webhook may have created
-            # the customer with the fabricated LID as phone_number. Try to find
-            # that record by LID and fix the phone number now that we know it.
-            if not customer and remote_jid_val and "@lid" in remote_jid_val:
-                customer = await db.customers.find_one({
-                    "user_id": user["_id"],
-                    "lid_jid": remote_jid_val,
+            # One person can be held twice: once against the LID chat that
+            # carries the conversation, once against the phone number the
+            # address-book sync imported. Look for both, because picking either
+            # one alone is what left a duplicate with the chat on the wrong
+            # record.
+            by_lid = None
+            if remote_jid_val and "@lid" in remote_jid_val:
+                by_lid = await db.customers.find_one({
+                    "user_id": user["_id"], "lid_jid": remote_jid_val,
                 })
-                if customer and not number_unavailable:
-                    # WhatsApp has now exposed the number behind this LID, so
-                    # the contact must stop being reported as number-less.
-                    await db.customers.update_one(
-                        {"_id": customer["_id"]},
-                        {
-                            "$set": {"phone_number": from_number},
-                            "$unset": {"phone_number_unavailable": ""},
-                        },
+            by_phone = None
+            if not number_unavailable:
+                by_phone = await db.customers.find_one({
+                    "user_id": user["_id"], **_phone_match_clause(from_number),
+                })
+
+            if by_lid and by_phone and by_lid["_id"] != by_phone["_id"]:
+                # Now that the LID resolves to a number we already hold, the two
+                # records are the same person. Keep the one carrying the
+                # conversation so the chat does not open empty.
+                lid_msgs = await db.messages.count_documents(
+                    {"user_id": user["_id"], "customer_id": by_lid["_id"]})
+                phone_msgs = await db.messages.count_documents(
+                    {"user_id": user["_id"], "customer_id": by_phone["_id"]})
+                keep, drop = (
+                    (by_lid, by_phone) if lid_msgs >= phone_msgs else (by_phone, by_lid)
+                )
+                if hasattr(whatsapp_service, "merge_duplicate_contacts"):
+                    await whatsapp_service.merge_duplicate_contacts(user["_id"], keep, drop)
+                    logging.info(
+                        "Merged duplicate contacts for %s: kept %s, dropped %s",
+                        remote_jid_val, keep["_id"], drop["_id"],
                     )
+                customer = await db.customers.find_one({"_id": keep["_id"]}) or keep
+            else:
+                customer = by_lid or by_phone
+
+            # WhatsApp has now exposed the number behind this LID, so the
+            # contact must stop being reported as number-less.
+            if customer and not number_unavailable and not customer.get("phone_number"):
+                await db.customers.update_one(
+                    {"_id": customer["_id"]},
+                    {
+                        "$set": {"phone_number": from_number},
+                        "$unset": {"phone_number_unavailable": ""},
+                    },
+                )
 
             if customer:
                 customer_id = customer["_id"]

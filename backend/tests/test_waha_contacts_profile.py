@@ -683,3 +683,40 @@ def test_merge_repoints_orders_and_loyalty_not_just_messages():
                  "conversation_states"):
         rows = db[name].rows
         assert rows and all(r["customer_id"] == "lid-rec" for r in rows), name
+
+
+def test_first_sync_does_not_leave_the_same_person_listed_twice():
+    """The new-account path: the address book imports a contact by number, then
+    history resolves a LID chat to that same number. One person, one record."""
+    from_addressbook = {
+        "_id": "book-rec", "user_id": "biz-1", "name": "Jane",
+        "phone_number": "254712345678", "is_customer": False, "tags": ["Synced"],
+    }
+    from_lid_chat = {
+        "_id": "lid-rec", "user_id": "biz-1", "name": "WhatsApp contact",
+        "phone_number": "", "lid_jid": "99887766554433@lid",
+        "phone_number_unavailable": True, "tags": ["New"],
+    }
+    db = FakeDb(
+        users=[USER], customers=[from_addressbook, from_lid_chat],
+        messages=[{"_id": "m1", "user_id": "biz-1", "customer_id": "lid-rec",
+                   "remote_jid": "99887766554433@lid"}],
+        orders=[{"_id": "o1", "customer_id": "book-rec", "total": 10.0}],
+    )
+    routes = {
+        "/lids/": lambda p: {"lid": "99887766554433@lid", "pn": None},
+        "/messages": lambda p: [
+            {"id": "h1", "body": "hello", "fromMe": False, "timestamp": 1700000000,
+             "_data": {"Info": {"SenderAlt": "254712345678@s.whatsapp.net"}}},
+        ],
+    }
+    run(db, routes, lambda s: s.fetch_history_for_contact("biz-1", "", "lid-rec"))
+
+    assert len(db.customers.rows) == 1, [c["name"] for c in db.customers.rows]
+    survivor = db.customers.rows[0]
+    assert survivor["phone_number"] == "254712345678"
+    assert "phone_number_unavailable" not in survivor
+    assert survivor["name"] == "Jane"                    # real name beat the placeholder
+    assert set(survivor["tags"]) == {"New", "Synced"}
+    # The order followed the merge rather than being orphaned.
+    assert db["orders"].rows[0]["customer_id"] == survivor["_id"]
