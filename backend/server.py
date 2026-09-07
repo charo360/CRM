@@ -9131,6 +9131,81 @@ async def _repair_revenuecat_expiration_race(user: dict) -> bool:
     )
     return True
 
+_CLAIMABLE_EVENT_TYPES = [
+    "INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION",
+    "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED",
+]
+
+
+@api_router.post("/subscription/claim-purchase")
+async def claim_revenuecat_purchase(request: Request, user = Depends(get_current_user)):
+    """Attach a paid RevenueCat event that landed on no account.
+
+    Without Google Play server verification, a purchase only becomes real when
+    a RevenueCat webhook matches it to an account. When the identity does not
+    line up at purchase time the payment sits in the ledger owned by nobody,
+    and nothing recovers it. The app knows which RevenueCat identities it
+    holds, so it can point at that record.
+
+    The money is still proven by RevenueCat's own signed event - never by the
+    client's word. A caller may only point at an anonymous RevenueCat id, which
+    RevenueCat generates and never publishes, or at its own account id. It can
+    never name another account, and an event already applied to somebody is
+    never moved.
+    """
+    body = await request.json()
+    owner_id = str(user.get("business_id") or user["_id"])
+    candidates = [
+        value for value in (str(v) for v in (body.get("app_user_ids") or []) if v)
+        if value.startswith("$RCAnonymousID:") or value in (owner_id, str(user["_id"]))
+    ][:5]
+    if not candidates:
+        return {"status": "not_found", "reason": "no_claimable_identity"}
+
+    now_ms = int(datetime.utcnow().timestamp() * 1000)
+    event = await db.revenuecat_webhook_events.find_one(
+        {
+            "app_user_id": {"$in": candidates},
+            "processed_user_id": None,
+            "event_type": {"$in": _CLAIMABLE_EVENT_TYPES},
+            "expiration_at_ms": {"$gt": now_ms},
+        },
+        sort=[("event_timestamp_ms", -1)],
+    )
+    if not event:
+        return {"status": "not_found", "reason": "no_unapplied_purchase"}
+
+    plan_id = _revenuecat_plan_id(event.get("product_id"))
+    if not plan_id:
+        return {"status": "not_found", "reason": "unknown_product"}
+
+    await db.users.update_one(
+        {"_id": owner_id},
+        {"$set": {
+            "subscription_plan": plan_id,
+            "subscription_active": True,
+            "subscription_date": _revenuecat_datetime(event.get("purchased_at_ms")) or datetime.utcnow(),
+            "subscription_current_period_end": _revenuecat_datetime(event.get("expiration_at_ms")),
+            "subscription_cancel_at_period_end": False,
+            "billing_provider": "iap",
+            "revenuecat_app_user_id": event.get("app_user_id"),
+            "revenuecat_last_event_type": f"{event.get('event_type')}_CLAIMED",
+            "revenuecat_claimed_at": datetime.utcnow(),
+            "revenuecat_claimed_from_event_id": event.get("_id"),
+        }},
+    )
+    # Mark it applied so the same payment can never be claimed by anyone else.
+    await db.revenuecat_webhook_events.update_one(
+        {"_id": event["_id"], "processed_user_id": None},
+        {"$set": {"processed_user_id": owner_id, "claimed_at": datetime.utcnow()}},
+    )
+    logging.info(
+        "Claimed unapplied RevenueCat %s (event %s, app_user_id=%s) for %s",
+        event.get("event_type"), event.get("_id"), event.get("app_user_id"), owner_id,
+    )
+    return {"status": "claimed", "plan": plan_id}
+
+
 @api_router.get("/subscription/status")
 async def get_subscription_status(user = Depends(get_current_user)):
     """Get current user subscription status (includes entitlements)."""

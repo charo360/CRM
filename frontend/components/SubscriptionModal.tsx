@@ -162,7 +162,24 @@ export default function SubscriptionModal({
         info = await Purchases.restorePurchases();
       }
       if (!info.entitlements.active['premium']) return false;
-      return await waitForServerToConfirm();
+      if (await waitForServerToConfirm(20000)) return true;
+
+      // Google Play has it and the server does not. Without Play server
+      // verification a purchase is only real once a webhook matches it to an
+      // account, so one that arrived under a different identity is sitting in
+      // the ledger owned by nobody. Point at it: the server still requires
+      // RevenueCat's own signed event as proof, never this claim.
+      try {
+        await apiClient.post('/subscription/claim-purchase', {
+          app_user_ids: [
+            await Purchases.getAppUserID(),
+            info.originalAppUserId,
+          ].filter(Boolean),
+        });
+      } catch (claimErr) {
+        console.warn('Could not claim an unapplied purchase:', claimErr);
+      }
+      return await waitForServerToConfirm(20000);
     } catch (err) {
       console.warn('Could not adopt an existing subscription:', err);
       return false;
