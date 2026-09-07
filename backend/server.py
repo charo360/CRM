@@ -2305,7 +2305,11 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
                 "owner_name": team_member["name"],
                 "role": team_member["role"],
                 "business_id": business_id,
-                "subscription_active": True,  # Inherits from business
+                # No subscription flag of its own. A team member is entitled
+                # through the business, and entitlements already resolve to the
+                # owner's record - copying a flag here only creates a second
+                # answer that can disagree with it, which is how an account
+                # ended up reporting an active subscription with no plan.
                 "setup_complete": True,
                 "created_at": datetime.utcnow(),
             }
@@ -2686,7 +2690,11 @@ async def _complete_verified_phone_login(phone: str, auth_provider: str):
                 "owner_name": team_member["name"],
                 "role": team_member["role"],
                 "business_id": business_id,
-                "subscription_active": True,  # Inherits from business
+                # No subscription flag of its own. A team member is entitled
+                # through the business, and entitlements already resolve to the
+                # owner's record - copying a flag here only creates a second
+                # answer that can disagree with it, which is how an account
+                # ended up reporting an active subscription with no plan.
                 "setup_complete": True,
                 "auth_provider": auth_provider,
                 "created_at": datetime.utcnow(),
@@ -2713,6 +2721,13 @@ async def _complete_verified_phone_login(phone: str, auth_provider: str):
         )
 
         token = create_token(emp_user_id, phone)
+        # Report the business's real subscription rather than asserting one.
+        # Saying "active" regardless meant a team member of an unsubscribed
+        # business was told they were covered, and only found out when
+        # something they tried was refused.
+        owner_record = await db.users.find_one(
+            {"_id": business_id}, {"subscription_active": 1, "subscription_plan": 1, "business_name": 1}
+        ) or {}
         logging.info(f"Team member {phone} logged in via {auth_provider}")
         return serialize_doc({
             "status": "success",
@@ -2723,9 +2738,10 @@ async def _complete_verified_phone_login(phone: str, auth_provider: str):
             "user": {
                 "id": emp_user_id,
                 "phone_number": phone,
-                "business_name": "",
+                "business_name": owner_record.get("business_name") or "",
                 "owner_name": team_member["name"],
-                "subscription_active": True,
+                "subscription_active": bool(owner_record.get("subscription_active")),
+                "subscription_plan": owner_record.get("subscription_plan"),
                 "business_id": business_id,
                 "role": team_member["role"],
                 "settings": {},
