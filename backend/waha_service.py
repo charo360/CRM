@@ -126,6 +126,23 @@ def _is_placeholder_name(value: object) -> bool:
 _PHONE_JID_RE = re.compile(r"(\d{6,15})@(?:s\.whatsapp\.net|c\.us)")
 
 
+def _resolved_phone(candidate: object, lid: object) -> Optional[str]:
+    """Accept a resolved number only if it is not the LID wearing a disguise.
+
+    WhatsApp echoes the LID back as the phone number when it has no mapping to
+    give, on the lids endpoint and in engine payloads alike. Storing that
+    produces a contact whose "number" is a 15-digit code that can never be
+    dialled, which is exactly the fabrication this code exists to prevent. A
+    number that equals the LID it came from is not an answer.
+    """
+    phone = _digits(str(candidate or ""))
+    if not _is_phone_like(phone):
+        return None
+    if phone == _digits(str(lid or "")):
+        return None
+    return phone
+
+
 def _phone_from_jid(value: object) -> Optional[str]:
     """Return the digits of a phone-shaped JID, or None if it is not one."""
     match = _PHONE_JID_RE.fullmatch(str(value or "").strip())
@@ -142,7 +159,9 @@ def _dig(payload: object, *path: str) -> object:
     return current
 
 
-def _payload_phone(data: dict, from_me: bool, own_number: str = "") -> Optional[str]:
+def _payload_phone(
+    data: dict, from_me: bool, own_number: str = "", lid: object = None,
+) -> Optional[str]:
     """Read the contact's real number straight out of the engine payload.
 
     WAHA's GOWS engine resolves a LID against WhatsApp's own LID store and puts
@@ -167,18 +186,19 @@ def _payload_phone(data: dict, from_me: bool, own_number: str = "") -> Optional[
         _dig(data, "_data", "key", "participantPn"),
         data.get("to") if from_me else data.get("from"),
     )
-    for candidate in candidates:
-        phone = _phone_from_jid(candidate)
-        if phone and _is_phone_like(phone) and phone != own:
+    # A candidate that merely repeats the LID is the engine saying it has no
+    # mapping, not a phone number.
+    resolved = [
+        phone for phone in (_phone_from_jid(c) for c in candidates)
+        if phone and _resolved_phone(phone, lid or _dig(data, "chatId") or data.get("from"))
+    ]
+    for phone in resolved:
+        if phone != own:
             return phone
     # Every identity in this payload is the owner's own, so this is the chat
     # the business has with itself. Its number is then genuinely the contact's
     # number, and blanking it would hide the one number we are certain of.
-    for candidate in candidates:
-        phone = _phone_from_jid(candidate)
-        if phone and _is_phone_like(phone):
-            return phone
-    return None
+    return resolved[0] if resolved else None
 
 
 def _message_type(media: Optional[dict]) -> str:
@@ -325,8 +345,8 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                     before = len(mapping)
                     for row in rows:
                         lid = _digits(str((row or {}).get("lid") or ""))
-                        phone = _digits(str((row or {}).get("pn") or ""))
-                        if lid and _is_phone_like(phone):
+                        phone = _resolved_phone((row or {}).get("pn"), lid)
+                        if lid and phone:
                             mapping[lid] = phone
                             self._lid_phone_cache[f"{lid}@lid"] = (phone, now + 600)
                     # An engine that ignores ``offset`` would otherwise be
@@ -417,8 +437,8 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 )
                 if response.status_code == 200:
                     data = response.json()
-                    phone = _digits(str(data.get("pn") or ""))
-                    if _is_phone_like(phone):
+                    phone = _resolved_phone(data.get("pn"), remote_jid)
+                    if phone:
                         self._lid_phone_cache[remote_jid] = (phone, now + 600)
                         return phone
         except Exception as exc:
@@ -449,7 +469,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 return None
             messages = response.json()
             for item in messages if isinstance(messages, list) else []:
-                phone = _payload_phone(item, bool(item.get("fromMe")), own_number)
+                phone = _payload_phone(item, bool(item.get("fromMe")), own_number, chat_id)
                 if phone:
                     self._lid_phone_cache[chat_id] = (
                         phone, datetime.utcnow().timestamp() + 600
@@ -519,6 +539,58 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         if update:
             await self.db.customers.update_one({"_id": keep_id}, {"$set": update})
         await self.db.customers.delete_one({"_id": drop_id})
+
+    async def verify_suspicious_numbers(self, user_id: str, limit: int = 50) -> dict:
+        """Blank stored numbers WhatsApp does not recognise as real.
+
+        The pre-LID code imported some LIDs as though they were phone numbers.
+        Where no LID was recorded alongside, nothing local can prove the number
+        is fake - so ask WhatsApp. Only numbers at the very top of the E.164
+        range are questioned, which is a handful of contacts rather than the
+        whole address book, and a number is only cleared when WhatsApp answers
+        that it does not exist. An inconclusive answer changes nothing.
+        """
+        session, base_url = await self._session_and_node(user_id)
+        suspects = await self.db.customers.find(
+            {"user_id": user_id, "phone_number": {"$regex": r"^\+?\d{14,}$"}},
+            {"_id": 1, "phone_number": 1, "lid_jid": 1},
+        ).to_list(limit)
+
+        cleared = corrected = 0
+        for customer in suspects:
+            number = _digits(str(customer.get("phone_number") or ""))
+            if not number:
+                continue
+            try:
+                async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
+                    response = await client.get(
+                        f"{base_url}/api/contacts/check-exists",
+                        headers=self._headers(),
+                        params={"phone": number, "session": session},
+                    )
+                if response.status_code != 200:
+                    continue
+                data = response.json() or {}
+            except Exception as exc:
+                logger.debug("[waha.verify_suspicious_numbers] %s", exc)
+                continue
+
+            real = _resolved_phone(data.get("pn"), customer.get("lid_jid") or number)
+            if real and real != number:
+                # WhatsApp knows the actual number behind what we stored.
+                await self.db.customers.update_one(
+                    {"_id": customer["_id"]},
+                    {"$set": {"phone_number": real},
+                     "$unset": {"phone_number_unavailable": ""}},
+                )
+                corrected += 1
+            elif data.get("numberExists") is False:
+                await self.db.customers.update_one(
+                    {"_id": customer["_id"]},
+                    {"$set": {"phone_number": "", "phone_number_unavailable": True}},
+                )
+                cleared += 1
+        return {"checked": len(suspects), "cleared": cleared, "corrected": corrected}
 
     async def repair_lid_contacts(self, user_id: str) -> dict:
         """Repair contacts previously saved with a LID as their phone number.
@@ -597,12 +669,16 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 )
                 repaired += 1
 
+        # Contacts whose number came from a LID but which never recorded that
+        # LID cannot be caught above; ask WhatsApp about the few that look wrong.
+        verified = await self.verify_suspicious_numbers(user_id)
         return {
             "status": "success",
             "contacts_checked": len(mappings),
-            "repaired": repaired,
+            "repaired": repaired + verified["corrected"],
             "merged": merged,
-            "number_unavailable": unavailable,
+            "number_unavailable": unavailable + verified["cleared"],
+            "verified": verified,
         }
 
     async def _start_session(self, base_url: str, instance_name: str, config: dict) -> dict:
@@ -1186,7 +1262,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                       or {}).get("whatsapp") or {}).get("phone_number") or ""
                 )
                 for item in messages if isinstance(messages, list) else []:
-                    found = _payload_phone(item, bool(item.get("fromMe")), own_number)
+                    found = _payload_phone(item, bool(item.get("fromMe")), own_number, chat_id)
                     if found:
                         phone = found
                         self._lid_phone_cache[chat_id] = (
@@ -1457,7 +1533,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         is_lid = _is_lid_jid(remote_jid)
         if is_lid:
             own_number = str((user.get("whatsapp") or {}).get("phone_number") or "")
-            phone = from_payload = _payload_phone(data, from_me, own_number)
+            phone = from_payload = _payload_phone(data, from_me, own_number, remote_jid)
             if phone:
                 # Share the discovery with every other lookup for this contact.
                 self._lid_phone_cache[remote_jid] = (

@@ -46,6 +46,15 @@ class FakeCollection:
                     return False
                 if "$lt" in expected and not (actual is not None and actual < expected["$lt"]):
                     return False
+                if "$in" in expected and actual not in expected["$in"]:
+                    return False
+                if "$nin" in expected and actual in expected["$nin"]:
+                    return False
+                if "$regex" in expected:
+                    import re as _re
+                    if not (actual is not None
+                            and _re.search(expected["$regex"], str(actual))):
+                        return False
                 continue
             if actual != expected:
                 return False
@@ -720,3 +729,129 @@ def test_first_sync_does_not_leave_the_same_person_listed_twice():
     assert set(survivor["tags"]) == {"New", "Synced"}
     # The order followed the merge rather than being orphaned.
     assert db["orders"].rows[0]["customer_id"] == survivor["_id"]
+
+
+# ── A LID must never become a phone number ─────────────────────────────────
+
+def test_lids_endpoint_echoing_the_lid_is_not_a_number():
+    """WhatsApp returns the LID as 'pn' when it has no mapping to give.
+
+    Storing that is what produced contacts whose number was a 15-digit code.
+    """
+    from waha_service import _resolved_phone
+    assert _resolved_phone("226465153077249", "226465153077249@lid") is None
+    assert _resolved_phone("226465153077249@c.us", "226465153077249@lid") is None
+    # A genuine mapping for the same LID still gets through.
+    assert _resolved_phone("254712345678", "226465153077249@lid") == "254712345678"
+
+
+def test_bulk_lid_table_discards_rows_that_echo_the_lid():
+    db = FakeDb(users=[USER])
+    routes = {
+        "/lids": lambda p: [] if int(p.get("offset", 0)) else [
+            {"lid": "226465153077249@lid", "pn": "226465153077249@c.us"},  # echo
+            {"lid": "99887766554433@lid", "pn": "254712345678@c.us"},      # real
+        ],
+        "/api/contacts/all": lambda p: [],
+    }
+    mapping, _ = run(db, routes, lambda s: s._lid_phone_map("biz-1"))
+    assert mapping == {"99887766554433": "254712345678"}
+
+
+def test_contact_sync_leaves_an_echoed_lid_without_a_number():
+    """Better a contact honestly marked hidden than one wearing a fake number."""
+    db = FakeDb(users=[USER])
+    routes = {
+        "/lids": lambda p: [] if int(p.get("offset", 0)) else [
+            {"lid": "226465153077249@lid", "pn": "226465153077249@c.us"},
+        ],
+        "/api/contacts/all": lambda p: [] if int(p.get("offset", 0)) else [
+            {"id": "226465153077249@lid", "name": "Contact 7249"},
+        ],
+    }
+    result, _ = run(db, routes, lambda s: s.fetch_contacts("biz-1"))
+
+    saved = db.customers.rows[0]
+    assert saved["phone_number"] == ""
+    assert saved["phone_number_unavailable"] is True
+    assert result["without_number"] == 1
+
+
+def test_payload_echoing_the_lid_is_rejected():
+    from waha_service import _payload_phone
+    payload = {
+        "chatId": "226465153077249@lid",
+        "_data": {"Info": {"SenderAlt": "226465153077249@s.whatsapp.net"}},
+    }
+    assert _payload_phone(payload, from_me=False, own_number="",
+                          lid="226465153077249@lid") is None
+
+
+def test_repair_blanks_a_contact_whose_number_is_its_own_lid():
+    """The three real rows found in production: phone == lid digits."""
+    customer = {
+        "_id": "cust-1", "user_id": "biz-1", "name": "Contact 7249",
+        "phone_number": "226465153077249", "lid_jid": "226465153077249@lid",
+    }
+    db = FakeDb(users=[USER], customers=[customer],
+                messages=[{"_id": "m1", "user_id": "biz-1", "customer_id": "cust-1",
+                           "remote_jid": "226465153077249@lid"}])
+    routes = {
+        # The endpoint echoes the LID; the chat has nothing better to offer.
+        "/lids/": lambda p: {"lid": "226465153077249@lid", "pn": "226465153077249@c.us"},
+        "/messages": lambda p: [],
+    }
+    result, _ = run(db, routes, lambda s: s.repair_lid_contacts("biz-1"))
+
+    assert result["number_unavailable"] == 1, result
+    saved = db.customers.rows[0]
+    assert saved["phone_number"] == ""
+    assert saved["phone_number_unavailable"] is True
+
+
+def test_a_number_whatsapp_says_does_not_exist_is_cleared():
+    """The four rows with a long code but no LID recorded to compare against."""
+    db = FakeDb(users=[USER], customers=[
+        {"_id": "c1", "user_id": "biz-1", "name": "politician",
+         "phone_number": "153055840444434"},
+        {"_id": "c2", "user_id": "biz-1", "name": "Jane",
+         "phone_number": "254712345678"},   # normal length, never questioned
+    ])
+    routes = {"/contacts/check-exists": lambda p: {"numberExists": False, "pn": None}}
+    result, calls = run(db, routes, lambda s: s.verify_suspicious_numbers("biz-1"))
+
+    assert result["cleared"] == 1
+    bad = next(c for c in db.customers.rows if c["_id"] == "c1")
+    assert bad["phone_number"] == ""
+    assert bad["phone_number_unavailable"] is True
+    # The ordinary contact was never questioned, so it costs no request.
+    assert result["checked"] == 1
+    assert next(c for c in db.customers.rows if c["_id"] == "c2")["phone_number"] == "254712345678"
+
+
+def test_an_inconclusive_answer_leaves_the_number_alone():
+    """Never destroy a number on a failed or ambiguous lookup."""
+    db = FakeDb(users=[USER], customers=[
+        {"_id": "c1", "user_id": "biz-1", "name": "maybe real",
+         "phone_number": "153055840444434"},
+    ])
+    routes = {"/contacts/check-exists": lambda p: FakeResponse({}, status_code=500)}
+    result, _ = run(db, routes, lambda s: s.verify_suspicious_numbers("biz-1"))
+
+    assert result["cleared"] == 0
+    assert db.customers.rows[0]["phone_number"] == "153055840444434"
+
+
+def test_whatsapp_correcting_the_number_is_applied():
+    db = FakeDb(users=[USER], customers=[
+        {"_id": "c1", "user_id": "biz-1", "name": "Contact 9721",
+         "phone_number": "265858811199721", "phone_number_unavailable": True},
+    ])
+    routes = {"/contacts/check-exists": lambda p: {
+        "numberExists": True, "pn": "254712345678@c.us"}}
+    result, _ = run(db, routes, lambda s: s.verify_suspicious_numbers("biz-1"))
+
+    assert result["corrected"] == 1
+    saved = db.customers.rows[0]
+    assert saved["phone_number"] == "254712345678"
+    assert "phone_number_unavailable" not in saved
