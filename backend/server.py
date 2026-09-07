@@ -9261,16 +9261,28 @@ async def delete_account(request: Request):
         or whatsapp_service._instance_name(user_id)
     )
 
-    # Fire-and-forget Evolution cleanup — do NOT await so the response returns fast.
-    # Awaiting Evolution API (15s timeout + retries) caused Render to time out the request,
-    # which triggered the mobile app's offline queue to fake a success without actually deleting.
-    async def _cleanup_evolution():
+    # Which WAHA node holds this session is recorded on the user document, so
+    # read it before that document is deleted. The background cleanup below
+    # would otherwise fall back to a hash of the user id and address the wrong
+    # node, leaving the real session running on WAHA with nothing pointing at it.
+    disconnect_kwargs: dict = {}
+    if hasattr(whatsapp_service, "_node_for_user"):
         try:
-            await whatsapp_service.disconnect_instance(user_id)
-            logging.info(f"Account deletion: Evolution instances removed for user {user_id}")
+            _, node_url = await whatsapp_service._node_for_user(user_id)
+            disconnect_kwargs["base_url"] = node_url
+        except Exception as exc:
+            logging.warning(f"Account deletion: could not resolve WAHA node for {user_id}: {exc}")
+
+    # Fire-and-forget the provider cleanup — do NOT await it, so the response
+    # returns fast. Awaiting the provider (15s timeout plus retries) used to
+    # exhaust the request budget on Render.
+    async def _cleanup_whatsapp_session():
+        try:
+            result = await whatsapp_service.disconnect_instance(user_id, **disconnect_kwargs)
+            logging.info(f"Account deletion: WhatsApp session removed for {user_id}: {result}")
         except Exception as e:
-            logging.warning(f"Account deletion: Evolution cleanup failed for {user_id}: {e}")
-    asyncio.create_task(_cleanup_evolution())
+            logging.warning(f"Account deletion: WhatsApp cleanup failed for {user_id}: {e}")
+    asyncio.create_task(_cleanup_whatsapp_session())
 
     # Delete all user data from every collection (user_id and business_id are
     # the same for owners). These ran one after another, so a deletion cost

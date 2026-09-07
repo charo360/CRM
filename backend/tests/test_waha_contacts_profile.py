@@ -994,3 +994,32 @@ def test_a_number_returned_as_a_name_is_not_accepted():
 
     assert result["renamed"] == 0
     assert db.customers.rows[0]["name"] == "Contact 5678"
+
+
+def test_disconnect_uses_the_node_it_is_given():
+    """Account deletion resolves the node before the user record is removed.
+
+    Falling back to the hash would address the wrong node and leave the real
+    session running on WAHA.
+    """
+    db = FakeDb(users=[])   # the user document is already gone
+    service, calls, original = build_service(db, {})
+    service.node_urls = ("http://node-a.test", "http://node-b.test")
+
+    class _Client(FakeClient):
+        async def post(self, url, headers=None, json=None):
+            self.calls.append((url, {}))
+            return FakeResponse({}, 200)
+
+        async def delete(self, url, headers=None):
+            self.calls.append((url, {}))
+            return FakeResponse({}, 200)
+
+    waha_service.httpx.AsyncClient = lambda *a, **k: _Client({}, calls)
+    try:
+        asyncio.run(service.disconnect_instance("biz-1", base_url="http://node-b.test"))
+    finally:
+        waha_service.httpx.AsyncClient = original
+
+    assert calls, "no request was made"
+    assert all(url.startswith("http://node-b.test") for url, _ in calls), calls

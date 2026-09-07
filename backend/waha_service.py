@@ -1027,11 +1027,19 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             logger.warning("[waha.get_instance_status] %s: %s", user_id, exc)
             return {"connected": False, "status": "error"}
 
-    async def disconnect_instance(self, user_id: str) -> dict:
+    async def disconnect_instance(self, user_id: str, base_url: Optional[str] = None) -> dict:
+        """Log out and remove this business's WAHA session.
+
+        ``base_url`` lets a caller supply the node it already resolved. Account
+        deletion needs that: the node is recorded on the user document, so once
+        that document is gone the lookup falls back to a hash and can address
+        the wrong node, leaving the real session running.
+        """
         instance_name = self._instance_name(user_id)
         results: dict = {}
         try:
-            _, base_url = await self._node_for_user(user_id)
+            if not base_url:
+                _, base_url = await self._node_for_user(user_id)
             async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
                 logout = await client.post(
                     f"{base_url}/api/sessions/{quote(instance_name, safe='')}/logout", headers=self._headers()
