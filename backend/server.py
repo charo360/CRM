@@ -8697,6 +8697,62 @@ def _revenuecat_milliseconds(value: object) -> int:
         return 0
 
 
+async def _revenuecat_active_subscription(app_user_ids: list[str]) -> Optional[dict]:
+    """Read an active entitlement from RevenueCat's authenticated API.
+
+    TRANSFER webhooks intentionally omit the product and expiration. This is
+    also the authoritative fallback when the original purchase webhook is not
+    in our ledger, which happens for subscriptions created before the webhook
+    integration was enabled.
+    """
+    secret_key = os.environ.get("REVENUECAT_SECRET_API_KEY", "")
+    if not secret_key:
+        return None
+
+    import httpx
+    from urllib.parse import quote
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for app_user_id in dict.fromkeys(app_user_ids):
+            try:
+                response = await client.get(
+                    f"https://api.revenuecat.com/v1/subscribers/{quote(app_user_id, safe='')}",
+                    headers={"Authorization": f"Bearer {secret_key}", "Accept": "application/json"},
+                )
+            except httpx.HTTPError as exc:
+                logging.warning("RevenueCat subscriber lookup failed: %s", exc)
+                continue
+            if response.status_code != 200:
+                continue
+            subscriber = (response.json() or {}).get("subscriber") or {}
+            premium = (subscriber.get("entitlements") or {}).get("premium") or {}
+            product_id = premium.get("product_identifier")
+            plan_id = _revenuecat_plan_id(product_id)
+            expires_at = premium.get("expires_date")
+            try:
+                expires = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00")).replace(tzinfo=None)
+            except (TypeError, ValueError):
+                expires = None
+            if not plan_id or not expires or expires <= datetime.utcnow():
+                continue
+
+            subscription = (subscriber.get("subscriptions") or {}).get(product_id) or {}
+            purchased_at = subscription.get("purchase_date") or premium.get("purchase_date")
+            try:
+                purchased = datetime.fromisoformat(str(purchased_at).replace("Z", "+00:00")).replace(tzinfo=None)
+            except (TypeError, ValueError):
+                purchased = None
+            period_type = str(subscription.get("period_type") or "").lower()
+            return {
+                "plan_id": plan_id,
+                "expires_at": expires,
+                "purchased_at": purchased,
+                "is_trial": period_type == "trial",
+                "app_user_id": app_user_id,
+            }
+    return None
+
+
 @api_router.post("/subscription/revenuecat-webhook")
 async def revenuecat_subscription_webhook(request: Request):
     """Synchronise the authoritative Google Play subscription lifecycle.
@@ -9273,7 +9329,32 @@ async def claim_revenuecat_purchase(request: Request, user = Depends(get_current
         sort=[("event_timestamp_ms", -1)],
     )
     if not event:
-        return {"status": "not_found", "reason": "no_unapplied_purchase"}
+        # The subscription may predate our webhook ledger or have moved through
+        # a TRANSFER event, whose payload has no product snapshot. Ask
+        # RevenueCat itself for the entitlement using only identities this
+        # authenticated caller is allowed to present.
+        live_subscription = await _revenuecat_active_subscription(candidates)
+        if not live_subscription:
+            return {"status": "not_found", "reason": "no_unapplied_purchase"}
+        await db.users.update_one(
+            {"_id": owner_id},
+            {"$set": {
+                "subscription_plan": live_subscription["plan_id"],
+                "subscription_active": True,
+                "subscription_date": live_subscription["purchased_at"] or datetime.utcnow(),
+                "subscription_current_period_end": live_subscription["expires_at"],
+                "subscription_cancel_at_period_end": False,
+                "subscription_is_trial": live_subscription["is_trial"],
+                "subscription_trial_ends_at": (
+                    live_subscription["expires_at"] if live_subscription["is_trial"] else None
+                ),
+                "billing_provider": "iap",
+                "revenuecat_app_user_id": live_subscription["app_user_id"],
+                "revenuecat_last_event_type": "API_RECOVERY",
+                "revenuecat_recovered_at": datetime.utcnow(),
+            }},
+        )
+        return {"status": "claimed", "plan": live_subscription["plan_id"]}
 
     plan_id = _revenuecat_plan_id(event.get("product_id"))
     if not plan_id:
