@@ -9131,6 +9131,96 @@ async def _repair_revenuecat_expiration_race(user: dict) -> bool:
     )
     return True
 
+_PAYMENT_HEALTH_CACHE: dict = {"checked_at": 0.0, "result": None}
+
+
+@api_router.get("/health/payments")
+async def payment_verification_health():
+    """Report whether Google Play purchase verification is actually working.
+
+    Without it a purchase is only real once a RevenueCat webhook matches it to
+    an account, and a mismatch loses the payment silently. Knowing whether it
+    is configured should not require a customer to pay first and find out.
+
+    Reports booleans and a verdict, never the credentials. The probe asks
+    Google about a deliberately invalid token: a rejection of the *token* means
+    the credentials and the Play permission are both good, which is the part
+    that cannot be checked any other way.
+    """
+    import time as _time
+    now = _time.monotonic()
+    if _PAYMENT_HEALTH_CACHE["result"] and now - _PAYMENT_HEALTH_CACHE["checked_at"] < 60:
+        return _PAYMENT_HEALTH_CACHE["result"]
+
+    package_name = GOOGLE_PLAY_PACKAGE_NAME
+    sa_key_path = os.environ.get("GOOGLE_SA_KEY_PATH", "")
+    sa_key_json = os.environ.get("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+    credentials_source = (
+        "inline_json" if sa_key_json
+        else "key_file" if (sa_key_path and os.path.exists(sa_key_path))
+        else "missing"
+    )
+
+    result = {
+        "package_name_set": bool(package_name),
+        "credentials_source": credentials_source,
+        "credentials_valid": False,
+        "play_permission_ok": False,
+        "ready": False,
+        "detail": "",
+    }
+
+    if not package_name:
+        result["detail"] = "GOOGLE_PLAY_PACKAGE_NAME is not set."
+    elif credentials_source == "missing":
+        result["detail"] = (
+            "No service account credentials. Set GOOGLE_PLAY_SERVICE_ACCOUNT_JSON "
+            "to the key's JSON contents, or GOOGLE_SA_KEY_PATH to a file that exists."
+        )
+    else:
+        try:
+            import json as _json
+
+            from google.auth.transport.requests import Request as _GRequest
+            from google.oauth2 import service_account as _sa
+
+            scopes = ["https://www.googleapis.com/auth/androidpublisher"]
+            creds = (
+                _sa.Credentials.from_service_account_info(_json.loads(sa_key_json), scopes=scopes)
+                if sa_key_json
+                else _sa.Credentials.from_service_account_file(sa_key_path, scopes=scopes)
+            )
+            creds.refresh(_GRequest())
+            result["credentials_valid"] = True
+
+            async with httpx.AsyncClient(timeout=15) as client:
+                probe = await client.get(
+                    f"https://androidpublisher.googleapis.com/androidpublisher/v3"
+                    f"/applications/{package_name}/purchases/subscriptionsv2/tokens/"
+                    f"zilo-configuration-probe-not-a-real-token",
+                    headers={"Authorization": f"Bearer {creds.token}"},
+                )
+            if probe.status_code in (400, 404, 410):
+                # Google understood us and rejected the fake token: exactly right.
+                result["play_permission_ok"] = True
+                result["ready"] = True
+                result["detail"] = "Purchases will be verified with Google Play at the moment they happen."
+            elif probe.status_code in (401, 403):
+                result["detail"] = (
+                    f"Google rejected the service account ({probe.status_code}). The key is valid but "
+                    "it is not linked to this app in Play Console, or lacks the financial-data "
+                    "permission. Play Console > Users and permissions > invite the service account "
+                    "email, grant 'View financial data' for this app."
+                )
+            else:
+                result["detail"] = f"Unexpected response from Google Play: {probe.status_code}."
+        except Exception as exc:
+            result["detail"] = f"Could not use the service account credentials: {type(exc).__name__}: {exc}"[:300]
+
+    _PAYMENT_HEALTH_CACHE.update({"checked_at": now, "result": result})
+    return result
+
+
 _CLAIMABLE_EVENT_TYPES = [
     "INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION",
     "PRODUCT_CHANGE", "SUBSCRIPTION_EXTENDED",
