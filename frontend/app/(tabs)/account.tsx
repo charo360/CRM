@@ -18,7 +18,7 @@ import * as Clipboard from 'expo-clipboard';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
 import { apiClient, settingsAPI, whatsappAPI } from '../../context/api';
 import { NotificationHandler } from '../../utils/notification-handler';
@@ -369,7 +369,7 @@ export default function AccountScreen() {
    * order to be told they owned it. Run it at the moment access is actually
    * refused instead. Returns true once the server has confirmed.
    */
-  const tryClaimExistingPurchase = async (): Promise<boolean> => {
+  const tryClaimExistingPurchase = useCallback(async (): Promise<boolean> => {
     if (Constants.appOwnership === 'expo') return false;
     if (Platform.OS !== 'android') return false;
     try {
@@ -396,7 +396,44 @@ export default function AccountScreen() {
       console.log('No recoverable purchase:', claimErr?.response?.data?.detail || claimErr?.message);
       return false;
     }
-  };
+  }, [user?.id]);
+
+  // A subscription can finish recovering while Google Play is closing or while
+  // this tab is in the background. Refresh it as soon as Account becomes active
+  // so the action says "Get Pairing Code" before the customer has to tap it.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      const refreshWhatsAppAccess = async () => {
+        try {
+          const statusResponse = await apiClient.get('/subscription/status');
+          let paid = Boolean(statusResponse.data?.paid_active);
+
+          if (active) {
+            setPaidSubscriptionActive(paid);
+            setSubscriptionStatus(statusResponse.data);
+          }
+
+          if (!paid) {
+            paid = await tryClaimExistingPurchase();
+            if (active && paid) {
+              setPaidSubscriptionActive(true);
+              const refreshedStatus = await apiClient.get('/subscription/status');
+              if (active) setSubscriptionStatus(refreshedStatus.data);
+            }
+          }
+        } catch (error: any) {
+          console.log('Could not refresh WhatsApp payment access:', error?.message);
+        }
+      };
+
+      void refreshWhatsAppAccess();
+      return () => {
+        active = false;
+      };
+    }, [tryClaimExistingPurchase])
+  );
 
   const handleWhatsAppConnect = async () => {
     if (!waPhoneInput.trim()) {
