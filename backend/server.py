@@ -1039,7 +1039,16 @@ async def health_check():
         ai_status = drafter.get_status()
     except Exception:
         ai_status = {"ready": False, "error": "drafter not initialized"}
-    return {"status": "ok", "service": "crm-backend", "ai": ai_status}
+    # Which commit is actually serving. Without this, "is the fix live yet?"
+    # can only be answered by guessing from timing, and a fix that has not
+    # deployed is indistinguishable from a fix that does not work — which has
+    # cost more than one round of chasing the wrong thing.
+    return {
+        "status": "ok",
+        "service": "crm-backend",
+        "commit": (os.environ.get("RENDER_GIT_COMMIT") or "unknown")[:12],
+        "ai": ai_status,
+    }
 
 # ============ HELPER FUNCTIONS ============
 
