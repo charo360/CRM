@@ -1000,7 +1000,7 @@ export default function ChatScreen() {
           )}
           {/* Floating Send Button */}
           {selectedProducts.length > 0 && (
-            <View style={styles.sendSelectedBar}>
+            <View style={[styles.sendSelectedBar, { paddingBottom: Math.max(insets.bottom + 12, 32) }]}>
               <TouchableOpacity
                 style={[styles.sendSelectedButton, sendingBatch && { opacity: 0.6 }]}
                 onPress={handleSendSelectedProducts}
@@ -1050,7 +1050,12 @@ export default function ChatScreen() {
           activeOpacity={1}
           onPress={() => setShowReplyMode(false)}
         >
-          <TouchableOpacity style={styles.sheet} activeOpacity={1}>
+          {/* The modal draws edge-to-edge, so the last row lands under the
+              system nav bar unless we pad past it. */}
+          <TouchableOpacity
+            style={[styles.sheet, { paddingBottom: Math.max(insets.bottom + 12, 28) }]}
+            activeOpacity={1}
+          >
             <View style={styles.sheetGrabber} />
             {(Object.keys(REPLY_MODES) as ReplyMode[]).map((mode) => {
               const { title, subtitle, icon } = REPLY_MODES[mode];
@@ -1116,7 +1121,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 18,
     borderTopRightRadius: 18,
     paddingTop: 10,
-    paddingBottom: 28,
     paddingHorizontal: 8,
   },
   sheetGrabber: {
@@ -1360,7 +1364,6 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     padding: 16,
-    paddingBottom: 32,
     backgroundColor: 'rgba(11, 20, 26, 0.95)',
   },
   sendSelectedButton: {
