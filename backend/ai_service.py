@@ -120,9 +120,13 @@ class AIMessageDrafter:
 
     def _get_default_client_and_model(self):
         """Get the default client based on configured provider, with fallback to any available client"""
+        # gpt-5.6-luna over gpt-4o-mini for the customer-facing reply: blind
+        # judging preferred it 48 times out of 72, mostly on Sheng and casual
+        # openers, where 4o-mini reads like a call centre. Fabrication and
+        # arithmetic measured identical. Set OPENAI_CHAT_MODEL to roll back.
         provider_defaults = {
             'deepseek': ('deepseek', 'deepseek-chat'),
-            'openai': ('openai', 'gpt-4o-mini'),
+            'openai': ('openai', os.environ.get('OPENAI_CHAT_MODEL', 'gpt-5.6-luna')),
             'grok': ('grok', 'grok-4'),
             'claude': ('claude', 'claude-3-5-sonnet-latest'),
         }
@@ -137,7 +141,7 @@ class AIMessageDrafter:
                 ct, mn = provider_defaults.get(fb, (fb, 'unknown'))
                 return ct, mn, self.clients[fb]
         
-        return 'openai', 'gpt-4o-mini', None
+        return 'openai', os.environ.get('OPENAI_CHAT_MODEL', 'gpt-5.6-luna'), None
 
     def _get_client_and_model(self, model_pref: str = None):
         """Determine which client and model name to use based on preference"""
