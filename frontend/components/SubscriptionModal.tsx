@@ -161,14 +161,18 @@ export default function SubscriptionModal({
         // Not visible yet on this install; ask Play directly before giving up.
         info = await Purchases.restorePurchases();
       }
-      if (!info.entitlements.active['premium']) return false;
-      if (await waitForServerToConfirm(20000)) return true;
+      if (info.entitlements.active['premium'] && (await waitForServerToConfirm(20000))) {
+        return true;
+      }
 
-      // Google Play has it and the server does not. Without Play server
-      // verification a purchase is only real once a webhook matches it to an
-      // account, so one that arrived under a different identity is sitting in
-      // the ledger owned by nobody. Point at it: the server still requires
-      // RevenueCat's own signed event as proof, never this claim.
+      // Do not require the entitlement to be visible here before trying. A
+      // purchase made before the SDK knew who was buying stays under its
+      // anonymous identity, so this device can hold a live, paid subscription
+      // that getCustomerInfo does not report as ours — the exact case Play
+      // refuses to sell twice while the app has nothing to show for it.
+      // Name every identity this install has ever used and let the server look.
+      // It still requires RevenueCat's own signed event as proof, never this
+      // claim, and can only be pointed at an unapplied one.
       try {
         await apiClient.post('/subscription/claim-purchase', {
           app_user_ids: [
