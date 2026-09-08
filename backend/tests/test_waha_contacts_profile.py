@@ -1023,3 +1023,50 @@ def test_disconnect_uses_the_node_it_is_given():
 
     assert calls, "no request was made"
     assert all(url.startswith("http://node-b.test") for url, _ in calls), calls
+
+
+def test_the_number_is_read_from_wherever_the_engine_puts_it():
+    """The real payload: no _data.Info, but the sender's number is present.
+
+    Five attempts at this contact failed by trusting the field name the engine's
+    release notes describe over the message actually in hand.
+    """
+    from waha_service import _payload_phone
+    payload = {
+        "id": "false_13444002652393@lid_ABC",
+        "from": "13444002652393@lid",
+        "fromMe": False,
+        "body": "Test",
+        "_data": {                       # no "Info" key at all
+            "key": {"remoteJid": "13444002652393@lid"},
+            "senderAlt": "12405054127@s.whatsapp.net",
+        },
+    }
+    assert _payload_phone(payload, from_me=False, own_number="12026995029",
+                          lid="13444002652393@lid") == "12405054127"
+
+
+def test_an_ambiguous_payload_yields_nothing_rather_than_a_guess():
+    """Two parties named and no way to tell which is the contact."""
+    from waha_service import _payload_phone
+    payload = {
+        "from": "13444002652393@lid",
+        "_data": {"a": "254712345678@s.whatsapp.net",
+                  "b": "254799999999@s.whatsapp.net"},
+    }
+    assert _payload_phone(payload, from_me=False, own_number="12026995029",
+                          lid="13444002652393@lid") is None
+
+
+def test_the_scan_still_refuses_the_lid_and_the_owner():
+    from waha_service import _payload_phone
+    # Only the LID echoed back: not a number.
+    only_lid = {"from": "13444002652393@lid",
+                "_data": {"x": "13444002652393@s.whatsapp.net"}}
+    assert _payload_phone(only_lid, from_me=False, own_number="12026995029",
+                          lid="13444002652393@lid") is None
+    # Only the owner: the self-chat, where the owner really is the contact.
+    only_owner = {"from": "13444002652393@lid",
+                  "_data": {"x": "12026995029@s.whatsapp.net"}}
+    assert _payload_phone(only_owner, from_me=False, own_number="12026995029",
+                          lid="13444002652393@lid") == "12026995029"

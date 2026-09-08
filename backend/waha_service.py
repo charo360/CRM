@@ -236,10 +236,38 @@ def _payload_phone(
     for phone in resolved:
         if phone != own:
             return phone
+
+    # The named fields above are what the engine's release notes describe. This
+    # deployment sends no _data.Info at all, yet the sender's number is in the
+    # payload - so read it from wherever it is rather than from where it was
+    # supposed to be. Every earlier attempt at this contact failed by trusting
+    # the documented field name over the message in hand.
+    #
+    # Only act on an unambiguous answer: take the phone numbers present, drop
+    # the owner's own and any echo of the LID, and use the result only when one
+    # distinct number remains. A payload naming several parties yields nothing
+    # rather than a guess about which of them is the contact.
+    try:
+        found = {
+            match.group(1)
+            for match in _PHONE_JID_RE.finditer(json.dumps(data, default=str))
+        }
+    except Exception:
+        found = set()
+    scanned = {
+        phone for phone in found
+        if _resolved_phone(phone, lid or _dig(data, "chatId") or data.get("from"))
+    }
+    others = scanned - {own}
+    if len(others) == 1:
+        return others.pop()
+
     # Every identity in this payload is the owner's own, so this is the chat
     # the business has with itself. Its number is then genuinely the contact's
     # number, and blanking it would hide the one number we are certain of.
-    return resolved[0] if resolved else None
+    if resolved:
+        return resolved[0]
+    return scanned.pop() if len(scanned) == 1 else None
 
 
 def _message_type(media: Optional[dict]) -> str:
