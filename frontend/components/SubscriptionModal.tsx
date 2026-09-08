@@ -128,12 +128,12 @@ export default function SubscriptionModal({
     while (Date.now() < deadline) {
       try {
         const statusResponse = await apiClient.get('/subscription/status');
-        // Wait for the entitlement that actually opens the product, not the
-        // raw subscription flag. An account can carry subscription_active
-        // with no plan behind it, which reads as success here and is then
-        // refused at the door - reporting a subscription found and bouncing
-        // straight back to the payment screen.
-        if (statusResponse.data?.dashboard_access || statusResponse.data?.paid_active) {
+        // Only a paid subscription counts as confirmation. Not
+        // subscription_active, a raw flag an account can carry with no plan
+        // behind it; and not dashboard_access, which the free trial satisfies
+        // — accepting that reported a subscription found for someone who had
+        // only ever started a trial, and then refused them at the door.
+        if (statusResponse.data?.paid_active) {
           return true;
         }
       } catch (statusErr) {
