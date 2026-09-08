@@ -175,18 +175,9 @@ export default function SubscriptionModal({
         // Not visible yet on this install; ask Play directly before giving up.
         info = await Purchases.restorePurchases();
       }
-      if (info.entitlements.active['premium'] && (await waitForServerToConfirm(20000))) {
-        return true;
-      }
-
-      // Do not require the entitlement to be visible here before trying. A
-      // purchase made before the SDK knew who was buying stays under its
-      // anonymous identity, so this device can hold a live, paid subscription
-      // that getCustomerInfo does not report as ours — the exact case Play
-      // refuses to sell twice while the app has nothing to show for it.
-      // Name every identity this install has ever used and let the server look.
-      // It still requires RevenueCat's own signed event as proof, never this
-      // claim, and can only be pointed at an unapplied one.
+      // Ask the signed server ledger immediately. The old implementation first
+      // waited 20 seconds, then claimed, then waited another 20 seconds. That
+      // made every checkout feel frozen even for people who had never paid.
       try {
         await apiClient.post('/subscription/claim-purchase', {
           app_user_ids: [
@@ -197,7 +188,7 @@ export default function SubscriptionModal({
       } catch (claimErr) {
         console.warn('Could not claim an unapplied purchase:', claimErr);
       }
-      return await waitForServerToConfirm(20000);
+      return await waitForServerToConfirm(8000);
     } catch (err) {
       console.warn('Could not adopt an existing subscription:', err);
       return false;
@@ -240,19 +231,8 @@ export default function SubscriptionModal({
         }
       }
 
-      // This Google account may already hold a subscription - commonly after
-      // deleting a Zilo account and signing up again. Claim it instead of
-      // opening a checkout Play is going to refuse.
-      if (await adoptExistingSubscription()) {
-        Alert.alert(
-          'Subscription found',
-          'You already have an active Zilo subscription, so it has been linked to this account. No new charge was made.',
-        );
-        await onSuccess();
-        onClose();
-        return;
-      }
-
+      // Open Google Play promptly. If Play says this account already owns a
+      // subscription, the error handler below runs the recovery path once.
       const offerings = await Purchases.getOfferings();
 
       // Search all offerings for a matching product
@@ -359,7 +339,7 @@ export default function SubscriptionModal({
       if (alreadyOwned) {
         Alert.alert(
           'Already subscribed',
-          'Google Play says this account already has a Zilo subscription, but Zilo has not received the confirmation yet. Please try again in a minute.',
+          'Google Play confirms this account already owns Zilo, but it could not be linked automatically. Do not purchase again; contact support so the existing subscription can be attached.',
         );
         return;
       }
