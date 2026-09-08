@@ -493,6 +493,11 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 return phone
 
         session, base_url = await self._session_and_node(user_id)
+        # Record what each source actually said. Five attempts at this have been
+        # made by reasoning about what WhatsApp probably returns; none of them
+        # worked, and none could be checked without the server's logs. Keep the
+        # answers where they can be read.
+        attempts: dict = {}
         try:
             async with httpx.AsyncClient(timeout=10, verify=self.verify_ssl) as client:
                 response = await client.get(
@@ -502,6 +507,10 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                     f"{base_url}/api/{quote(session, safe='')}/lids/{quote(remote_jid.split('@', 1)[0], safe='')}",
                     headers=self._headers(),
                 )
+                attempts["lids_endpoint"] = {
+                    "status": response.status_code,
+                    "body": response.text[:300],
+                }
                 if response.status_code == 200:
                     data = response.json()
                     phone = _resolved_phone(data.get("pn"), remote_jid)
@@ -516,6 +525,10 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                     headers=self._headers(),
                     params={"contactId": remote_jid, "session": session},
                 )
+                attempts["contacts_endpoint"] = {
+                    "status": contact.status_code,
+                    "body": contact.text[:300],
+                }
                 if contact.status_code == 200:
                     record = contact.json() or {}
                     for field in ("pn", "number", "id"):
@@ -525,8 +538,33 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                             return phone
         except Exception as exc:
             logger.debug("[waha._resolve_lid_phone] %s", exc)
+            attempts["error"] = f"{type(exc).__name__}: {exc}"[:200]
+        finally:
+            if attempts:
+                await self._record_lid_diagnostic(user_id, remote_jid, attempts)
         self._lid_phone_cache[remote_jid] = (None, now + 60)
         return None
+
+    async def _record_lid_diagnostic(self, user_id: str, remote_jid: str, attempts: dict) -> None:
+        """Keep what each source said about a LID, so a failure can be read.
+
+        Only the last attempt per LID is kept, and only the first few hundred
+        characters of each reply, so this stays a diagnostic rather than a log
+        of the address book.
+        """
+        try:
+            await self.db.lid_diagnostics.update_one(
+                {"_id": f"{user_id}:{remote_jid}"},
+                {"$set": {
+                    "user_id": user_id,
+                    "lid": remote_jid,
+                    "attempts": attempts,
+                    "recorded_at": datetime.utcnow(),
+                }},
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.debug("[waha._record_lid_diagnostic] %s", exc)
 
     async def _phone_from_chat_messages(
         self, user_id: str, session: str, chat_id: str, own_number: str = "",
@@ -1723,6 +1761,22 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 remote_jid, phone or "unresolved",
                 "payload" if from_payload else ("lids-api" if phone else "none"),
             )
+            if not phone:
+                # Keep the shape of the payload that failed. Whether the engine
+                # sends a phone JID at all is the one fact every attempt so far
+                # has assumed rather than checked.
+                await self._record_lid_diagnostic(user["_id"], remote_jid, {
+                    "payload_top_level_keys": sorted(str(k) for k in data)[:40],
+                    "payload_data_info": {
+                        str(k): str(v)[:80]
+                        for k, v in (_dig(data, "_data", "Info") or {}).items()
+                    } if isinstance(_dig(data, "_data", "Info"), dict) else None,
+                    "phone_shaped_values_found": sorted({
+                        m.group(0) for m in _PHONE_JID_RE.finditer(json.dumps(data, default=str))
+                    })[:10],
+                    "from_me": from_me,
+                    "own_number": own_number,
+                })
         else:
             phone = _digits(_jid_to_phone(remote_jid))
             if not _is_phone_like(phone):
