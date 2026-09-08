@@ -17465,8 +17465,8 @@ async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
     )
     connections.sort(key=lambda item: (not item["connected"], item["business_name"].lower()))
     async def inspect_node(index: int, url: str) -> dict:
-        configured_caps = [int(v) for v in os.environ.get("WAHA_NODE_SESSION_CAPACITIES", "25").split(",") if v.strip().isdigit()]
-        capacity = configured_caps[index] if index < len(configured_caps) else (configured_caps[-1] if configured_caps else 25)
+        configured_caps = [int(v) for v in os.environ.get("WAHA_NODE_SESSION_CAPACITIES", "10").split(",") if v.strip().isdigit()]
+        capacity = configured_caps[index] if index < len(configured_caps) else (configured_caps[-1] if configured_caps else 10)
         assigned = sum(1 for item in connections if item.get("node") == index)
         result = {
             "node": index, "label": f"WAHA {index + 1}",
@@ -17479,8 +17479,8 @@ async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
             "capacity_percent": round((assigned / capacity) * 100, 1) if capacity else 0,
         }
         try:
-            username = os.environ.get("WAHA_METRICS_USERNAME", "")
-            password = os.environ.get("WAHA_METRICS_PASSWORD", "")
+            username = os.environ.get("WAHA_METRICS_USERNAME", "zilo-monitor")
+            password = os.environ.get("WAHA_METRICS_PASSWORD", WAHA_API_KEY)
             auth = (username, password) if username and password else None
             async with httpx.AsyncClient(timeout=8, verify=WAHA_VERIFY_SSL) as client:
                 response = await client.get(f"{url}/metrics", auth=auth)
