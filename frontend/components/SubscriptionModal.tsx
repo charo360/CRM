@@ -59,6 +59,7 @@ export default function SubscriptionModal({
   const { user } = useAuth();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [purchasing, setPurchasing] = useState(false);
   const isPreviewBuild = Constants.expoConfig?.extra?.buildChannel === 'preview';
@@ -75,7 +76,20 @@ export default function SubscriptionModal({
     try {
       setLoading(true);
       const response = await apiClient.get('/subscription/plans');
-      setPlans(response.data);
+      const planOrder = ['starter', 'standard', 'pro'];
+      const planRank = (id: string) => {
+        const rank = planOrder.indexOf(id);
+        return rank === -1 ? planOrder.length : rank;
+      };
+      const orderedPlans = [...response.data].sort(
+        (a: Plan, b: Plan) => planRank(a.id) - planRank(b.id)
+      );
+      setPlans(orderedPlans);
+      setSelectedPlanId((selected) =>
+        orderedPlans.some((plan: Plan) => plan.id === selected)
+          ? selected
+          : orderedPlans[0]?.id || null
+      );
     } catch (error) {
       console.error('Error loading plans:', error);
       Alert.alert('Error', 'Failed to load subscription plans');
@@ -387,17 +401,27 @@ export default function SubscriptionModal({
       const customerInfo = await Purchases.restorePurchases();
 
       if (customerInfo.entitlements.active['premium']) {
-        // Access is granted by the server, never by what the app can see.
-        // RevenueCat confirms a subscription to the phone, then tells Zilo over
-        // its signed webhook; until Zilo has heard that, nothing is restored —
-        // saying otherwise leaves someone locked out while being told they are
-        // not.
-        const confirmed = await waitForServerToConfirm();
+        // A previous purchase can be sitting in the signed RevenueCat ledger
+        // under this install's anonymous identity. Point the server at every
+        // identity the SDK can prove belongs to this install before polling.
+        // The endpoint still grants access only from RevenueCat's signed event.
+        try {
+          await apiClient.post('/subscription/claim-purchase', {
+            app_user_ids: [
+              await Purchases.getAppUserID(),
+              customerInfo.originalAppUserId,
+            ].filter(Boolean),
+          });
+        } catch (claimErr) {
+          console.warn('Could not claim restored purchase:', claimErr);
+        }
+
+        const confirmed = await waitForServerToConfirm(15000);
 
         if (!confirmed) {
           Alert.alert(
             'Still confirming your subscription',
-            'Google Play has your subscription, but Zilo has not received the confirmation yet. This can take a minute — please try again shortly. If it keeps happening, contact support.'
+            'Google Play has your subscription, but Zilo could not link it automatically. Contact support with this screen; do not purchase again.'
           );
           return;
         }
@@ -470,15 +494,14 @@ export default function SubscriptionModal({
                     ? (store.introPriceString || formatPrice(store.price / 2, store.currencyCode))
                     : `${plan.currency} ${Math.round(plan.amount * 0.5).toLocaleString()}`;
                   return (
-                    <TouchableOpacity
+                    <View
                       key={plan.id}
                       style={[
                         styles.packageCard,
                         index === 1 && styles.popularCard,
-                        isCurrentPlan && styles.currentPlanCard
+                        isCurrentPlan && styles.currentPlanCard,
+                        selectedPlanId === plan.id && styles.selectedPlanCard,
                       ]}
-                      onPress={() => handlePurchase(plan)}
-                      disabled={purchasing || isCurrentPlan}
                     >
                       {index === 1 && !isCurrentPlan && (
                         <View style={styles.popularBadge}>
@@ -524,8 +547,12 @@ export default function SubscriptionModal({
                         ))}
                       </View>
 
-                      <View style={[
+                      <TouchableOpacity
+                        onPress={() => setSelectedPlanId(plan.id)}
+                        disabled={purchasing || isCurrentPlan}
+                        style={[
                         styles.selectButton,
+                        selectedPlanId === plan.id && styles.selectedButton,
                         isCurrentPlan && styles.selectButtonDisabled
                       ]}>
                         <Text style={[
@@ -534,17 +561,35 @@ export default function SubscriptionModal({
                         ]}>
                           {isCurrentPlan
                             ? 'Active'
-                            : purchasing
-                              ? 'Processing...'
-                              : isWhatsAppTrial
-                                ? 'Verify & start 14-day free trial'
-                                : 'Claim 50% Off'}
+                            : selectedPlanId === plan.id
+                              ? 'Selected'
+                              : `Choose ${plan.name}`}
                         </Text>
-                      </View>
-                    </TouchableOpacity>
+                      </TouchableOpacity>
+                    </View>
                   );
                 })}
               </View>
+
+              {selectedPlanId && (() => {
+                const selectedPlan = plans.find(plan => plan.id === selectedPlanId);
+                if (!selectedPlan) return null;
+                return (
+                  <TouchableOpacity
+                    style={styles.checkoutButton}
+                    onPress={() => handlePurchase(selectedPlan)}
+                    disabled={purchasing}
+                  >
+                    <Text style={styles.checkoutButtonText}>
+                      {purchasing
+                        ? 'Processing...'
+                        : isWhatsAppTrial
+                          ? `Continue with ${selectedPlan.name} — verify payment method`
+                          : `Continue with ${selectedPlan.name}`}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })()}
 
               <TouchableOpacity
                 style={styles.restoreButton}
@@ -632,6 +677,10 @@ const styles = StyleSheet.create({
   popularCard: {
     borderColor: '#2DB843',
     backgroundColor: '#1A3A4F',
+  },
+  selectedPlanCard: {
+    borderColor: '#25D366',
+    borderWidth: 3,
   },
   popularBadge: {
     position: 'absolute',
@@ -758,6 +807,24 @@ const styles = StyleSheet.create({
   },
   selectButtonDisabled: {
     backgroundColor: '#1E3A5F',
+  },
+  selectedButton: {
+    backgroundColor: '#176B2C',
+  },
+  checkoutButton: {
+    backgroundColor: '#2DB843',
+    marginHorizontal: 20,
+    marginBottom: 12,
+    paddingVertical: 15,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  checkoutButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   selectButtonText: {
     fontSize: 15,
