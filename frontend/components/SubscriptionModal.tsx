@@ -472,7 +472,7 @@ export default function SubscriptionModal({
                   </Text>
                   <Text style={styles.introSub}>
                     {isWhatsAppTrial
-                      ? 'Google Play will securely verify your payment method. No charge today.'
+                      ? 'Google Play will securely verify a supported payment method. No charge today.'
                       : 'Limited-time launch offer for new subscribers'}
                   </Text>
                 </View>
@@ -604,7 +604,7 @@ export default function SubscriptionModal({
 
               <Text style={styles.disclaimer}>
                 {isWhatsAppTrial
-                  ? '• A payment method is required by Google Play to activate the trial\n• No charge is made today\n• Cancel anytime in Google Play before the trial ends'
+                  ? '• Use a supported Google Play method: Visa, Mastercard or Airtel Money\n• M-Pesa Xpress availability depends on Google Play and your Safaricom account\n• No charge is made today\n• Cancel anytime in Google Play before the trial ends'
                   : '• 50% discount applied to first 3 billing months\n• Full price resumes from month 4 automatically\n• Cancel anytime from Play Store / App Store'}
               </Text>
             </ScrollView>
