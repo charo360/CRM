@@ -11,7 +11,9 @@ import {
   TextInput,
   Modal,
   Image,
+  Platform,
 } from 'react-native';
+import Constants from 'expo-constants';
 import * as Clipboard from 'expo-clipboard';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -359,6 +361,43 @@ export default function AccountScreen() {
     }
   };
 
+  /**
+   * Try to attach a payment that never reached this account.
+   *
+   * Recovery used to happen only inside the purchase screen, so it required
+   * someone to attempt buying a subscription they had already paid for in
+   * order to be told they owned it. Run it at the moment access is actually
+   * refused instead. Returns true once the server has confirmed.
+   */
+  const tryClaimExistingPurchase = async (): Promise<boolean> => {
+    if (Constants.appOwnership === 'expo') return false;
+    if (Platform.OS !== 'android') return false;
+    try {
+      const Purchases = require('react-native-purchases').default;
+      if (!user?.id) return false;
+      if ((await Purchases.getAppUserID()) !== user.id) {
+        await Purchases.logIn(user.id);
+      }
+      let info = await Purchases.getCustomerInfo();
+      try {
+        info = await Purchases.restorePurchases();
+      } catch (restoreErr) {
+        console.log('Restore unavailable while claiming:', restoreErr);
+      }
+      await apiClient.post('/subscription/claim-purchase', {
+        app_user_ids: [
+          await Purchases.getAppUserID(),
+          info?.originalAppUserId,
+        ].filter(Boolean),
+      });
+      const status = await apiClient.get('/subscription/status');
+      return Boolean(status.data?.paid_active);
+    } catch (claimErr: any) {
+      console.log('No recoverable purchase:', claimErr?.response?.data?.detail || claimErr?.message);
+      return false;
+    }
+  };
+
   const handleWhatsAppConnect = async () => {
     if (!waPhoneInput.trim()) {
       Alert.alert('Error', 'Please enter your WhatsApp phone number');
@@ -379,6 +418,13 @@ export default function AccountScreen() {
       setPaidSubscriptionActive(paid);
 
       if (!paid) {
+        // A payment may already exist that never reached this account. Look
+        // before asking for another one.
+        if (await tryClaimExistingPurchase()) {
+          setPaidSubscriptionActive(true);
+          await beginWhatsAppPairing();
+          return;
+        }
         showWhatsAppTrial();
         return;
       }
@@ -665,8 +711,11 @@ export default function AccountScreen() {
     ? 'Add a payment method in Google Play to start your free trial.'
     : isZiloTrial
       ? ziloTrialEndsAt && !Number.isNaN(ziloTrialEndsAt.getTime())
-        ? `Free trial ends ${ziloTrialEndsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}. Subscribe any time to keep going — no card needed until then.`
-        : 'Your free trial is running. No card needed until it ends.'
+        // Say what the trial does and does not cover. A bare countdown reads
+        // as "you have paid", so someone then meets the WhatsApp payment
+        // screen believing they already dealt with it.
+        ? `Free CRM trial until ${ziloTrialEndsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}. Connecting WhatsApp still needs a payment method — no charge today.`
+        : 'Free CRM trial running. Connecting WhatsApp still needs a payment method.'
       : isGooglePlayTrial
         ? `${renewalLabel} • Then ${activePlanName} continues unless you cancel in Google Play.`
         : renewalLabel;
