@@ -62,3 +62,39 @@ def test_the_real_conversation_leaves_almost_nothing_to_judge():
     # And a lone greeting is not enough to classify anyone.
     incoming = [m for m in kept if m["direction"] == "incoming"]
     assert not any(len(str(m["content"]).split()) >= 3 for m in incoming)
+
+
+def test_lamita_cutey_would_not_be_flagged_now():
+    """The real thread that reached "customer, 80% - inquiring about products".
+
+    Everything about products came from the auto-reply. The contact said four
+    things, none of them about buying anything.
+    """
+    from contact_classifier import ContactClassifier
+    thread = [
+        {"direction": "incoming", "content": "Yes hello"},
+        {"direction": "outgoing", "send_context": "auto_reply",
+         "content": "Hi there! What are you looking for today? Feel free to browse our products"},
+        {"direction": "incoming", "content": "Ik"},
+        {"direction": "incoming", "content": "Ok"},
+        {"direction": "outgoing", "send_context": "auto_reply",
+         "content": "Niaje! Unatafuta nini leo? Unaweza kuangalia bidhaa zetu"},
+        {"direction": "outgoing", "send_context": "auto_reply",
+         "content": "Sawa! Ikiwa unataka kuangalia bidhaa, niambie tu."},
+        {"direction": "incoming", "content": "Ok no problem"},
+    ]
+
+    # What the old code judged: our own product talk dominates the text.
+    everything = " ".join(m["content"].lower() for m in thread)
+    assert "products" in everything and "bidhaa" in everything
+
+    # What it is judged on now: only the contact's own words remain, and they
+    # carry no commercial signal at all.
+    kept = [m for m in thread if _is_owner_authored(m)]
+    assert all(m["direction"] == "incoming" for m in kept)
+    theirs = " ".join(m["content"].lower() for m in kept)
+    assert "product" not in theirs and "bidhaa" not in theirs
+
+    verdict = ContactClassifier.__new__(ContactClassifier)._keyword_classify(kept)
+    assert verdict["type"] in ("unknown", "personal")
+    assert verdict["confidence"] < 0.4
