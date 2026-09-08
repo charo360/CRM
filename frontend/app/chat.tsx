@@ -38,6 +38,30 @@ interface Message {
   remote_jid?: string | null;
 }
 
+type ReplyMode = 'mine' | 'suggestions' | 'agent';
+
+/** The three ways a message can be answered, named rather than implied. */
+const REPLY_MODES: Record<
+  ReplyMode,
+  { title: string; subtitle: string; icon: keyof typeof Ionicons.glyphMap }
+> = {
+  mine: {
+    title: 'My reply',
+    subtitle: 'No AI. You write every message yourself.',
+    icon: 'create-outline',
+  },
+  suggestions: {
+    title: 'Suggestions',
+    subtitle: 'AI drafts a reply into the box. Nothing sends until you do.',
+    icon: 'color-wand-outline',
+  },
+  agent: {
+    title: 'AI agent',
+    subtitle: 'Replies to this contact on its own, in your voice.',
+    icon: 'sparkles',
+  },
+};
+
 export default function ChatScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
@@ -73,6 +97,10 @@ export default function ChatScreen() {
   const flatListRef = useRef<FlatList>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
+  const [showReplyMode, setShowReplyMode] = useState(false);
+  // Which of the three the chip is showing. "Suggestions" is an action rather
+  // than a saved setting, so it reverts to "My reply" once a draft is in the box.
+  const replyMode: ReplyMode = autoReplyEnabled ? 'agent' : (drafting ? 'suggestions' : 'mine');
   const [isPersonal, setIsPersonal] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
   const [showToast, setShowToast] = useState(false);
@@ -144,19 +172,36 @@ export default function ChatScreen() {
     loadInitialData();
   }, [customerId]);
 
-  const toggleAutoReply = async () => {
-    const newVal = !autoReplyEnabled;
-    setAutoReplyEnabled(newVal); // Optimistic update
-    setToastMessage(newVal ? 'Auto-Reply Enabled' : 'Auto-Reply Disabled');
+  const handleSelectReplyMode = async (mode: ReplyMode) => {
+    setShowReplyMode(false);
+    if (mode === 'suggestions') {
+      // An action, not a stored setting: draft into the box and leave the
+      // sending to the owner.
+      if (autoReplyEnabled) await setAutoReply(false);
+      handleAIDraft();
+      return;
+    }
+    const wantAgent = mode === 'agent';
+    if (wantAgent !== autoReplyEnabled) await setAutoReply(wantAgent);
+  };
+
+  const setAutoReply = async (enabled: boolean) => {
+    setAutoReplyEnabled(enabled); // Optimistic update
+    setToastMessage(
+      enabled
+        ? `AI agent is replying to ${customerName}`
+        : `You are replying to ${customerName}`,
+    );
     setShowToast(true);
     try {
-      await apiClient.put(`/customers/${customerId}`, { auto_reply: newVal });
+      await apiClient.put(`/customers/${customerId}`, { auto_reply: enabled });
     } catch (e) {
-      setAutoReplyEnabled(!newVal); // Revert on failure
-      console.error('Failed to toggle auto-reply', e);
-      Alert.alert('Error', 'Failed to update auto-reply setting');
+      setAutoReplyEnabled(!enabled); // Revert on failure
+      console.error('Failed to set reply mode', e);
+      Alert.alert('Error', 'Could not change the reply mode. Please try again.');
     }
   };
+
 
   const togglePersonal = async () => {
     const newVal = !isPersonal;
@@ -820,25 +865,31 @@ export default function ChatScreen() {
           </View>
         )}
 
+        {/* The mode used to be two unlabelled icons, so which one was in force
+            could only be guessed from a bolt being lit or not. Name it, and let
+            it be changed from one place. It sits above the composer so the
+            attach and storefront icons stay level with the text. */}
+        <View style={styles.modeChipRow}>
+          <TouchableOpacity
+            style={styles.modeChip}
+            onPress={() => setShowReplyMode(true)}
+            accessibilityLabel={`Reply mode: ${REPLY_MODES[replyMode].title}. Tap to change.`}
+          >
+            <Ionicons
+              name={REPLY_MODES[replyMode].icon}
+              size={13}
+              color={replyMode === 'mine' ? '#8B9DC3' : '#FFD700'}
+            />
+            <Text style={[styles.modeChipText, replyMode !== 'mine' && { color: '#FFD700' }]}>
+              {REPLY_MODES[replyMode].title}
+            </Text>
+            <Ionicons name="chevron-up" size={12} color="#8B9DC3" />
+          </TouchableOpacity>
+        </View>
+
         {/* Input bar — WhatsApp style */}
         <View style={[styles.inputBar, { paddingBottom: Math.max(insets.bottom, 6) }]}>
           {/* Auto-Reply Toggle (Left of input) */}
-          <TouchableOpacity
-            onPress={toggleAutoReply}
-            style={{
-              marginRight: 8,
-              padding: 8,
-              justifyContent: 'center',
-              alignItems: 'center'
-            }}
-          >
-            <Ionicons
-              name={autoReplyEnabled ? "flash" : "flash-off"}
-              size={20}
-              color={autoReplyEnabled ? "#FFD700" : "#8B9DC3"}
-            />
-          </TouchableOpacity>
-
           <View style={styles.inputPill}>
             <TouchableOpacity style={styles.pillIcon} onPress={() => setShowAttachMenu(!showAttachMenu)}>
               <Ionicons name="attach" size={24} color="#8B9DC3" />
@@ -852,14 +903,8 @@ export default function ChatScreen() {
               multiline
               maxLength={4096}
             />
-            <TouchableOpacity style={styles.pillIcon} onPress={handleAIDraft} disabled={drafting}>
-              {drafting ? (
-                <ActivityIndicator size="small" color="#FFD700" />
-              ) : (
-                <Ionicons name="sparkles" size={22} color="#FFD700" />
-              )}
-            </TouchableOpacity>
-            {!inputText.trim() && (
+            {drafting && <ActivityIndicator size="small" color="#FFD700" style={styles.pillIcon} />}
+            {!inputText.trim() && !drafting && (
               <TouchableOpacity style={styles.pillIcon} onPress={handleOpenProducts}>
                 <Ionicons name="storefront-outline" size={22} color="#8B9DC3" />
               </TouchableOpacity>
@@ -992,11 +1037,114 @@ export default function ChatScreen() {
           )}
         </View>
       </Modal>
+
+      {/* Reply mode — one sheet, three named choices, current one marked. */}
+      <Modal
+        visible={showReplyMode}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowReplyMode(false)}
+      >
+        <TouchableOpacity
+          style={styles.sheetOverlay}
+          activeOpacity={1}
+          onPress={() => setShowReplyMode(false)}
+        >
+          <TouchableOpacity style={styles.sheet} activeOpacity={1}>
+            <View style={styles.sheetGrabber} />
+            {(Object.keys(REPLY_MODES) as ReplyMode[]).map((mode) => {
+              const { title, subtitle, icon } = REPLY_MODES[mode];
+              const active = replyMode === mode;
+              return (
+                <TouchableOpacity
+                  key={mode}
+                  style={styles.sheetRow}
+                  onPress={() => handleSelectReplyMode(mode)}
+                >
+                  <Ionicons
+                    name={icon}
+                    size={24}
+                    color={active ? '#25D366' : '#8B9DC3'}
+                    style={{ width: 34 }}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sheetTitle, active && { color: '#25D366' }]}>
+                      {title}
+                    </Text>
+                    <Text style={styles.sheetSubtitle}>{subtitle}</Text>
+                  </View>
+                  {active && <Ionicons name="checkmark" size={20} color="#25D366" />}
+                </TouchableOpacity>
+              );
+            })}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  modeChipRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingBottom: 2,
+  },
+  modeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#1F2C34',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(139,157,195,0.35)',
+  },
+  modeChipText: {
+    color: '#8B9DC3',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  sheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: '#14213A',
+    borderTopLeftRadius: 18,
+    borderTopRightRadius: 18,
+    paddingTop: 10,
+    paddingBottom: 28,
+    paddingHorizontal: 8,
+  },
+  sheetGrabber: {
+    alignSelf: 'center',
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(139,157,195,0.4)',
+    marginBottom: 10,
+  },
+  sheetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 12,
+  },
+  sheetTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  sheetSubtitle: {
+    color: '#8B9DC3',
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
+  },
   container: {
     flex: 1,
     backgroundColor: '#0B141A',
