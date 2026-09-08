@@ -40,6 +40,20 @@ _DAILY_SEND_LIMITS: Dict[str, int] = {
 }
 
 
+def owner_whatsapp_number(user: dict) -> str:
+    """Return the number a WhatsApp message to the business owner can reach.
+
+    The number a business signs up with is not always the one it links to
+    WhatsApp: it may verify with one and run WhatsApp on another, and a
+    sign-up number can be one nobody reads. Sending to the sign-up number
+    still succeeds — it is delivered into a chat the owner never opens — so
+    the failure is silent. Prefer the linked WhatsApp number, and fall back
+    to the sign-up number only when nothing is linked.
+    """
+    whatsapp = user.get("whatsapp") or {}
+    return str(whatsapp.get("phone_number") or user.get("phone_number") or "").strip()
+
+
 def whatsapp_owner_id(user: dict) -> str:
     """Business (tenant) id used for Evolution instance naming and WhatsApp state."""
     raw = user.get("business_id") or user.get("_id") or user.get("id") or ""

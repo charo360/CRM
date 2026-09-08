@@ -118,12 +118,12 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
                 wa_sent = False
                 if user.get("phone_number") and user.get("whatsapp", {}).get("instance_name"):
                     try:
-                        from whatsapp_service import get_whatsapp_service
+                        from whatsapp_service import get_whatsapp_service, owner_whatsapp_number
                         ws = get_whatsapp_service(db)
                         message = digest_service.format_whatsapp_message(digest)
                         result = await ws.send_message(
                             user_id=user_id,
-                            to_number=user["phone_number"],
+                            to_number=owner_whatsapp_number(user),
                             message=message,
                             send_context="digest"
                         )
@@ -216,11 +216,11 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
                 # Send via WhatsApp
                 if user.get("phone_number") and user.get("whatsapp", {}).get("instance_name"):
                     try:
-                        from whatsapp_service import get_whatsapp_service
+                        from whatsapp_service import get_whatsapp_service, owner_whatsapp_number
                         ws = get_whatsapp_service(db)
                         result = await ws.send_message(
                             user_id=user_id,
-                            to_number=user["phone_number"],
+                            to_number=owner_whatsapp_number(user),
                             message=motivation["message"],
                             send_context="motivation"
                         )

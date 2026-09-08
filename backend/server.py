@@ -11219,7 +11219,8 @@ async def evolution_webhook(request: Request):
                 # Notify owner of new contact messaging for the first time
                 async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
                     try:
-                        owner_phone = owner_user.get("phone_number") or owner_user.get("whatsapp", {}).get("phone_number")
+                        from whatsapp_service import owner_whatsapp_number
+                        owner_phone = owner_whatsapp_number(owner_user)
                         if not owner_phone:
                             return
                         # Don't notify if owner IS the new contact (self-message edge case)
@@ -13430,9 +13431,10 @@ async def send_digest_now(digest_type: str = "morning", user = Depends(get_curre
         try:
             wa_service = WhatsAppService()
             message = digest_service.format_whatsapp_message(digest)
+            from whatsapp_service import owner_whatsapp_number
             result = await wa_service.send_message(
                 user_id=user["_id"],
-                to_number=user["phone_number"],
+                to_number=owner_whatsapp_number(user),
                 message=message
             )
             results["whatsapp"] = result.get("success", False)
@@ -13513,9 +13515,10 @@ async def send_motivation_now(is_monday: bool = False, user = Depends(get_curren
     if user.get("phone_number"):
         try:
             wa_service = WhatsAppService()
+            from whatsapp_service import owner_whatsapp_number
             response = await wa_service.send_message(
                 user_id=user["_id"],
-                to_number=user["phone_number"],
+                to_number=owner_whatsapp_number(user),
                 message=motivation["message"]
             )
             result["sent"] = response.get("success", False)
