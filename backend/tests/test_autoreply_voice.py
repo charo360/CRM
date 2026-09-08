@@ -136,3 +136,46 @@ def test_nothing_is_added_when_the_owner_has_not_written_anything_yet():
         products=[], services=[], mini_state={}, owner_voice=[],
     )
     assert "HOW YOU WRITE" not in prompt
+
+
+# ── The owner's voice must not decide the customer's language ──────────────
+
+def test_a_sentence_is_judged_by_its_grammar_not_its_nouns():
+    """Product names and sizes are borrowed into both languages."""
+    from autoreply.context_loader import _is_swahili
+
+    assert _is_swahili("Do you have t-shirts in medium?") is False
+    assert _is_swahili("How much is a hoodie?") is False
+    assert _is_swahili("Thanks, I will come pick it up") is False
+    # Swahili sentences carrying English nouns are still Swahili.
+    assert _is_swahili("Uko na medium?") is True
+    assert _is_swahili("Nataka size large") is True
+    assert _is_swahili("Niaje, tshirt ni ngapi?") is True
+
+
+def test_only_samples_in_the_customers_language_are_shown():
+    """A shop whose past replies are Sheng must still answer English in English.
+
+    Instructing the model to keep the samples' manner but not their language did
+    not hold — five wordings gave anywhere from no drift to every reply drifting.
+    Examples pull harder than instructions about examples, so the mismatched ones
+    are removed rather than argued with.
+    """
+    import inspect
+
+    from autoreply import context_loader
+
+    source = inspect.getsource(context_loader._load_owner_voice)
+    assert "_is_swahili(message)" in source
+    assert "_is_swahili(text) != wants_swahili" in source
+
+
+def test_no_message_means_no_language_filter():
+    """Nothing to match against must not silently drop every sample."""
+    import inspect
+
+    from autoreply import context_loader
+
+    source = inspect.getsource(context_loader._load_owner_voice)
+    assert "if message else None" in source
+    assert "wants_swahili is not None" in source
