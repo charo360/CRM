@@ -61,6 +61,26 @@ PERSONAL_KEYWORDS = [
 ]
 
 
+# Outgoing messages the business actually composed. Everything else we send —
+# an auto-reply, a digest, a motivational note — is Zilo talking, not the
+# business, and says nothing about who the contact is.
+#
+# This matters more than it looks. The auto-reply answers "Hello" with "What
+# are you looking for today? Browse our products", and reading that back as
+# evidence turned every greeting into a shopping conversation: the classifier
+# was being persuaded by its own output.
+OWNER_AUTHORED_CONTEXTS = {"manual", "product_send"}
+
+
+def _is_owner_authored(message: Dict) -> bool:
+    """Return whether an outgoing message was written by the business itself."""
+    if message.get("direction") != "outgoing":
+        return True  # incoming messages are always the contact's own words
+    context = message.get("send_context")
+    # Older sends predate send_context; those were all manual.
+    return context is None or context in OWNER_AUTHORED_CONTEXTS
+
+
 class ContactClassifier:
     """Classifies contacts as Customer or Supplier based on chat analysis"""
 
@@ -91,8 +111,19 @@ class ContactClassifier:
             "user_id": user_id
         }).sort("created_at", -1).limit(30).to_list(30)
 
-        if len(messages) < 2:
+        # Judge the contact on what was actually said to and by them, not on
+        # what Zilo said on the business's behalf.
+        messages = [m for m in messages if _is_owner_authored(m)]
+
+        incoming = [m for m in messages if m.get("direction") == "incoming"]
+        if len(messages) < 2 or not incoming:
             return None  # Not enough data to classify
+
+        # A contact who has only greeted is not evidence of anything. Requiring
+        # something beyond hello stops a one-word opener, answered by an
+        # auto-reply full of product talk, from being read as intent to buy.
+        if not any(len(str(m.get("content") or "").split()) >= 3 for m in incoming):
+            return None
 
         messages.reverse()  # Chronological order
 
@@ -263,6 +294,9 @@ Classify as ONE of:
 - UNKNOWN — genuinely unclear; conversation doesn't have enough commercial signal to decide either way
 
 Rules:
+- Judge by what THEM says. What YOU says is not evidence of their intent — a
+  shop replying with a product list does not make the other person a buyer
+- If THEM has only greeted, or only sent one or two words → UNKNOWN
 - If the conversation is mostly greetings, small talk, or life updates → PERSONAL or UNKNOWN
 - If there's ANY doubt → lean toward UNKNOWN, never guess
 - Don't classify based on one word — read the full intent
