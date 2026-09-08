@@ -17468,15 +17468,16 @@ async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
         configured_caps = [int(v) for v in os.environ.get("WAHA_NODE_SESSION_CAPACITIES", "10").split(",") if v.strip().isdigit()]
         capacity = configured_caps[index] if index < len(configured_caps) else (configured_caps[-1] if configured_caps else 10)
         assigned = sum(1 for item in connections if item.get("node") == index)
+        connected_count = sum(1 for item in connections if item.get("node") == index and item.get("connected"))
         result = {
             "node": index, "label": f"WAHA {index + 1}",
             "regions": sorted(country for country, node_url in WAHA_REGION_NODES.items() if node_url == url),
             "healthy": False, "metrics_available": False,
             "assigned_sessions": assigned,
-            "connected_sessions": sum(1 for item in connections if item.get("node") == index and item.get("connected")),
+            "connected_sessions": connected_count,
             "reported_sessions": None, "memory_mb": None, "heap_mb": None,
             "capacity": capacity,
-            "capacity_percent": round((assigned / capacity) * 100, 1) if capacity else 0,
+            "capacity_percent": round((connected_count / capacity) * 100, 1) if capacity else 0,
         }
         try:
             username = os.environ.get("WAHA_METRICS_USERNAME", "zilo-monitor")

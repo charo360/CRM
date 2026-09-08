@@ -128,8 +128,8 @@ export default function AdminWhatsAppPage() {
                   </span>
                 </div>
                 <div className="mt-4 flex items-end justify-between gap-3">
-                  <p className="text-2xl font-bold text-slate-900">{node.assigned_sessions}<span className="text-sm font-normal text-slate-400"> / {node.capacity} sessions</span></p>
-                  <p className="text-xs text-slate-500">{node.connected_sessions} connected</p>
+                  <p className="text-2xl font-bold text-slate-900">{node.connected_sessions}<span className="text-sm font-normal text-slate-400"> / {node.capacity} active sessions</span></p>
+                  <p className="text-xs text-slate-500">{node.assigned_sessions} records assigned</p>
                 </div>
                 <div className="h-2 bg-slate-100 rounded-full overflow-hidden mt-2"><div className={`h-full ${tone}`} style={{ width: `${Math.min(100, node.capacity_percent)}%` }} /></div>
                 <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
