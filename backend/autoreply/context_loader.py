@@ -103,13 +103,58 @@ async def load_context(db, user_id, customer_id, user: dict, message: str = "") 
 
     business_config = _build_business_config(user, settings, business_type)
 
+    owner_voice = await _load_owner_voice(db, user_id)
+
     return {
         "messages": messages,
         "mini_state": mini_state,
         "products": products,
         "services": services,
         "business_config": business_config,
+        "owner_voice": owner_voice,
     }
+
+
+async def _load_owner_voice(db, user_id, limit: int = 8) -> List[str]:
+    """Recent replies the owner typed themselves, to write in their voice.
+
+    Rules about tone can only describe a voice from outside. The owner's own
+    messages are the voice, so show a handful and let it match them.
+
+    Only messages the owner actually composed. An auto-reply is this system's
+    own output, and learning from that is how the classifier ended up
+    persuaded by its own words - the mistake is cheap to repeat and hard to
+    see once it has happened.
+    """
+    try:
+        raw = await db.messages.find(
+            {
+                "user_id": user_id,
+                "direction": "outgoing",
+                "send_context": "manual",
+                "content": {"$nin": [None, ""]},
+            },
+            {"content": 1},
+        ).sort("created_at", -1).limit(60).to_list(60)
+    except Exception:
+        return []
+
+    seen: set = set()
+    voice: List[str] = []
+    for row in raw:
+        text = _sanitize(row.get("content"))
+        # Skip the very short ("ok", "yes") and the very long: neither shows
+        # how this person writes to a customer.
+        if not (12 <= len(text) <= 320):
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        voice.append(text)
+        if len(voice) >= limit:
+            break
+    return voice
 
 
 async def _load_messages(db, user_id, customer_id) -> List[Dict]:

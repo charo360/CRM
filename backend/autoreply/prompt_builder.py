@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 # ── Per-business-type instruction blocks ─────────────────────────────────────
@@ -2872,6 +2872,7 @@ def build_system_prompt(
     services: list,
     mini_state: dict,
     reply_channel: str = "",
+    owner_voice: Optional[List[str]] = None,
 ) -> str:
     bc = business_config
     btype = bc.get("type", "retail")
@@ -2905,6 +2906,23 @@ def build_system_prompt(
             f"You run *{name}* and are answering your own business WhatsApp. "
             f"Write as the owner — never mention being an assistant, a bot, or "
             f"automated."
+        )
+
+    # ── The owner's own voice ──
+    # Worth more than any rule written here. Instructions can only describe a
+    # voice from outside; these are the voice. When they exist they outrank the
+    # generic guidance, because they are how this particular person writes to
+    # their own customers.
+    if owner_voice:
+        sample = "\n".join(f'  "{v}"' for v in owner_voice[:8])
+        parts.append(
+            "HOW YOU WRITE — your own recent replies to customers:\n"
+            f"{sample}\n"
+            "Match this. Their greeting, their length, their level of formality, "
+            "their emoji habit, their language and how they mix it. If these look "
+            "different from the general guidance below, follow these — they are "
+            "you. Do not reuse the sentences themselves; write new ones that "
+            "sound like the same person."
         )
 
     channel = (reply_channel or bc.get("reply_channel") or "").strip()

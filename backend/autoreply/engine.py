@@ -126,6 +126,7 @@ async def process_message(
             services=ctx["services"],
             mini_state=ctx["mini_state"],
             reply_channel=reply_channel,
+            owner_voice=ctx.get("owner_voice"),
         )
 
         # 3. Build conversation messages

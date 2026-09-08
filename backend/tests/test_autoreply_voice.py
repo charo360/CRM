@@ -90,3 +90,49 @@ def test_the_software_openers_are_named_and_banned():
 
 def test_two_shops_in_one_trade_are_told_to_differ():
     assert "same line of work should not open with the same sentence" in _SHARED_ALWAYS
+
+
+# ── Learning the owner's voice ─────────────────────────────────────────────
+
+def test_only_messages_the_owner_typed_are_learned_from():
+    """The auto-reply must never learn from its own output.
+
+    That loop is not hypothetical: the contact classifier read this system's
+    auto-replies back as evidence and flagged people who had only said "Hello"
+    as customers. Learning tone the same way would drift the voice toward
+    whatever it already produces, and nobody would see it happening.
+    """
+    import inspect
+
+    from autoreply import context_loader
+
+    source = inspect.getsource(context_loader._load_owner_voice)
+    assert '"send_context": "manual"' in source
+    assert '"direction": "outgoing"' in source
+
+
+def test_the_owners_replies_outrank_the_written_guidance():
+    from autoreply.prompt_builder import build_system_prompt
+
+    prompt = build_system_prompt(
+        business_config={"name": "Mo apparel", "owner_name": "Sam", "type": "retail"},
+        products=[], services=[], mini_state={},
+        owner_voice=["Niaje boss, tshirt ni 1200 tu. Unataka size gani?"],
+    )
+    assert "HOW YOU WRITE" in prompt
+    assert "Niaje boss" in prompt
+    assert "follow these — they are" in prompt
+    # And it must not simply parrot them back.
+    assert "Do not reuse the sentences themselves" in prompt
+
+
+def test_nothing_is_added_when_the_owner_has_not_written_anything_yet():
+    """A new account has no manual replies; the prompt must not carry an empty
+    section implying it does."""
+    from autoreply.prompt_builder import build_system_prompt
+
+    prompt = build_system_prompt(
+        business_config={"name": "Mo apparel", "type": "retail"},
+        products=[], services=[], mini_state={}, owner_voice=[],
+    )
+    assert "HOW YOU WRITE" not in prompt
