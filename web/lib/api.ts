@@ -261,6 +261,21 @@ export interface AdminWhatsAppConnection {
   last_change_at: string | null;
 }
 
+export interface AdminWhatsAppNode {
+  node: number;
+  label: string;
+  regions: string[];
+  healthy: boolean;
+  metrics_available: boolean;
+  assigned_sessions: number;
+  connected_sessions: number;
+  reported_sessions: number | null;
+  memory_mb: number | null;
+  heap_mb: number | null;
+  capacity: number;
+  capacity_percent: number;
+}
+
 export interface FollowUp {
   id: string;
   customer_id: string;
@@ -880,6 +895,7 @@ export const adminApi = {
     return (raw ? JSON.parse(raw) : {}) as {
       provider: string;
       connections: AdminWhatsAppConnection[];
+      nodes: AdminWhatsAppNode[];
       total: number;
       connected: number;
       refreshed_at: string;

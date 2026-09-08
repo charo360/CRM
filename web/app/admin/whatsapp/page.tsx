@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { adminApi, type AdminWhatsAppConnection } from "@/lib/api";
+import { adminApi, type AdminWhatsAppConnection, type AdminWhatsAppNode } from "@/lib/api";
 import { formatDateTime } from "@/lib/utils";
 import {
   Activity,
@@ -53,6 +53,7 @@ function StatCard({
 export default function AdminWhatsAppPage() {
   const [connections, setConnections] = useState<AdminWhatsAppConnection[]>([]);
   const [provider, setProvider] = useState("WAHA");
+  const [nodes, setNodes] = useState<AdminWhatsAppNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -63,6 +64,7 @@ export default function AdminWhatsAppPage() {
     try {
       const data = await adminApi.listWhatsAppConnections();
       setConnections(data.connections || []);
+      setNodes(data.nodes || []);
       setProvider((data.provider || "WAHA").toUpperCase());
       setLastUpdated(data.refreshed_at || new Date().toISOString());
       setError("");
@@ -107,6 +109,38 @@ export default function AdminWhatsAppPage() {
         <StatCard label="Businesses linked" value={loading ? "—" : connections.length} icon={MessageCircle} color="bg-indigo-100 text-indigo-700" />
         <StatCard label="Connected now" value={loading ? "—" : connected} icon={CheckCircle2} color="bg-emerald-100 text-emerald-700" />
         <StatCard label="Need attention" value={loading ? "—" : needsAttention} icon={WifiOff} color="bg-rose-100 text-rose-700" />
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-slate-100">
+          <h2 className="text-sm font-semibold text-slate-800">Server capacity</h2>
+          <p className="text-xs text-slate-400 mt-1">Safe session capacity, live WAHA memory and engine health.</p>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-5">
+          {nodes.map((node) => {
+            const tone = node.capacity_percent >= 85 ? "bg-rose-500" : node.capacity_percent >= 65 ? "bg-amber-500" : "bg-emerald-500";
+            return (
+              <div key={node.node} className="rounded-xl border border-slate-200 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div><p className="font-semibold text-slate-900">{node.label}</p><p className="text-xs text-slate-500">{node.regions.length ? node.regions.join(", ") : "Shared / fallback"}</p></div>
+                  <span className={`text-[11px] font-medium px-2 py-1 rounded-full ${node.healthy ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                    {node.healthy ? "Healthy" : node.metrics_available ? "Unhealthy" : "Metrics unavailable"}
+                  </span>
+                </div>
+                <div className="mt-4 flex items-end justify-between gap-3">
+                  <p className="text-2xl font-bold text-slate-900">{node.assigned_sessions}<span className="text-sm font-normal text-slate-400"> / {node.capacity} sessions</span></p>
+                  <p className="text-xs text-slate-500">{node.connected_sessions} connected</p>
+                </div>
+                <div className="h-2 bg-slate-100 rounded-full overflow-hidden mt-2"><div className={`h-full ${tone}`} style={{ width: `${Math.min(100, node.capacity_percent)}%` }} /></div>
+                <div className="grid grid-cols-2 gap-3 mt-4 text-xs">
+                  <div className="bg-slate-50 rounded-lg p-3"><span className="text-slate-400">WAHA memory</span><p className="font-semibold text-slate-700 mt-1">{node.memory_mb === null ? "—" : `${node.memory_mb} MB`}</p></div>
+                  <div className="bg-slate-50 rounded-lg p-3"><span className="text-slate-400">Node heap</span><p className="font-semibold text-slate-700 mt-1">{node.heap_mb === null ? "—" : `${node.heap_mb} MB`}</p></div>
+                </div>
+              </div>
+            );
+          })}
+          {!loading && nodes.length === 0 && <p className="text-sm text-slate-400">No WAHA nodes are configured.</p>}
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

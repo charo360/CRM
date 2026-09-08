@@ -17391,6 +17391,7 @@ async def admin_access(_actor=Depends(get_admin_actor)):
 async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
     """Return a read-only, platform-wide view of WhatsApp connection health."""
     from whatsapp_service import get_whatsapp_service, whatsapp_owner_id
+    from waha_service import WAHA_REGION_NODES, WAHA_VERIFY_SSL
 
     projection = {
         "_id": 1,
@@ -17463,9 +17464,59 @@ async def admin_whatsapp_connections(_actor=Depends(get_admin_actor)):
         *(inspect_connection(owner_id, business) for owner_id, business in businesses.items())
     )
     connections.sort(key=lambda item: (not item["connected"], item["business_name"].lower()))
+    async def inspect_node(index: int, url: str) -> dict:
+        configured_caps = [int(v) for v in os.environ.get("WAHA_NODE_SESSION_CAPACITIES", "25").split(",") if v.strip().isdigit()]
+        capacity = configured_caps[index] if index < len(configured_caps) else (configured_caps[-1] if configured_caps else 25)
+        assigned = sum(1 for item in connections if item.get("node") == index)
+        result = {
+            "node": index, "label": f"WAHA {index + 1}",
+            "regions": sorted(country for country, node_url in WAHA_REGION_NODES.items() if node_url == url),
+            "healthy": False, "metrics_available": False,
+            "assigned_sessions": assigned,
+            "connected_sessions": sum(1 for item in connections if item.get("node") == index and item.get("connected")),
+            "reported_sessions": None, "memory_mb": None, "heap_mb": None,
+            "capacity": capacity,
+            "capacity_percent": round((assigned / capacity) * 100, 1) if capacity else 0,
+        }
+        try:
+            username = os.environ.get("WAHA_METRICS_USERNAME", "")
+            password = os.environ.get("WAHA_METRICS_PASSWORD", "")
+            auth = (username, password) if username and password else None
+            async with httpx.AsyncClient(timeout=8, verify=WAHA_VERIFY_SSL) as client:
+                response = await client.get(f"{url}/metrics", auth=auth)
+            if response.status_code != 200:
+                return result
+            samples: dict[str, float] = {}
+            reported_sessions = 0.0
+            for line in response.text.splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    metric, raw_value = line.rsplit(None, 1)
+                    value = float(raw_value)
+                except (ValueError, TypeError):
+                    continue
+                name = metric.split("{", 1)[0]
+                samples[name] = samples.get(name, 0.0) + value
+                if name == "waha_sessions":
+                    reported_sessions += value
+            resident = samples.get("waha_process_resident_memory_bytes")
+            heap = samples.get("waha_nodejs_heap_size_used_bytes")
+            result.update({
+                "healthy": samples.get("waha_up") == 1, "metrics_available": True,
+                "reported_sessions": int(reported_sessions),
+                "memory_mb": round(resident / 1048576, 1) if resident is not None else None,
+                "heap_mb": round(heap / 1048576, 1) if heap is not None else None,
+            })
+        except Exception as exc:
+            logging.info("[admin/whatsapp] WAHA %s metrics unavailable: %s", index + 1, exc)
+        return result
+
+    nodes = await asyncio.gather(*(inspect_node(index, url) for index, url in enumerate(getattr(service, "node_urls", ()))))
     return {
         "provider": getattr(service, "provider", "unknown"),
         "connections": connections,
+        "nodes": nodes,
         "total": len(connections),
         "connected": sum(1 for item in connections if item["connected"]),
         "refreshed_at": datetime.utcnow().isoformat(),
