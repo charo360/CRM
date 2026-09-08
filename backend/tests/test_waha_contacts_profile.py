@@ -1070,3 +1070,45 @@ def test_the_scan_still_refuses_the_lid_and_the_owner():
                   "_data": {"x": "12026995029@s.whatsapp.net"}}
     assert _payload_phone(only_owner, from_me=False, own_number="12026995029",
                           lid="13444002652393@lid") == "12026995029"
+
+
+# ── Naming a contact ───────────────────────────────────────────────────────
+
+def test_the_senders_name_is_found_below_the_top_level():
+    """This deployment sends no top-level pushName, so every contact was
+    named after the last digits of its own number."""
+    from waha_service import _payload_push_name
+    assert _payload_push_name({"pushName": "Grace"}) == "Grace"
+    assert _payload_push_name({"_data": {"pushName": "Grace"}}) == "Grace"
+    assert _payload_push_name({"_data": {"notifyName": "Grace"}}) == "Grace"
+    assert _payload_push_name({"_data": {"Info": {"PushName": "Grace"}}}) == "Grace"
+
+
+def test_a_number_offered_as_a_name_is_refused():
+    """A "name" that is really the number tells the business nothing."""
+    from waha_service import _payload_push_name
+    assert _payload_push_name({"pushName": "+254712345678"}) == ""
+    assert _payload_push_name({"_data": {"pushName": "Contact 0963"}}) == ""
+    assert _payload_push_name({}) == ""
+
+
+def test_a_real_name_beats_a_placeholder_further_up():
+    from waha_service import _payload_push_name
+    payload = {"pushName": "Contact 0963", "_data": {"notifyName": "Grace Wanjiku"}}
+    assert _payload_push_name(payload) == "Grace Wanjiku"
+
+
+def test_the_saved_name_is_fetched_when_the_message_has_none():
+    db = FakeDb(users=[USER])
+    routes = {"/api/contacts": lambda p: {"id": "254712345678@c.us",
+                                          "name": "Grace Wanjiku"}}
+    name, _ = run(db, routes, lambda s: s.fetch_contact_name("biz-1", "254712345678@c.us"))
+    assert name == "Grace Wanjiku"
+
+
+def test_a_contact_lookup_returning_only_a_number_is_not_a_name():
+    db = FakeDb(users=[USER])
+    routes = {"/api/contacts": lambda p: {"name": "254712345678",
+                                          "pushname": "+254 712 345678"}}
+    name, _ = run(db, routes, lambda s: s.fetch_contact_name("biz-1", "254712345678@c.us"))
+    assert name is None

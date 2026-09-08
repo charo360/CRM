@@ -395,6 +395,14 @@ def _is_lid_destination(value: object) -> bool:
     return bool(_re.fullmatch(r"[0-9]+@lid", str(value or "").strip()))
 
 
+def _is_invented_contact_name(value: object) -> bool:
+    """Return whether a contact's name is one we made up for want of a real one."""
+    text = str(value or "").strip()
+    return bool(_re.match(r"^(?:Customer|Contact)\s+\d+$", text)) or text in (
+        "", "WhatsApp contact",
+    )
+
+
 def _contact_name_key(contact: dict) -> tuple:
     """A-Z, with symbols and numbers after letters rather than before."""
     name = (contact.get("name") or "").strip()
@@ -11193,6 +11201,30 @@ async def evolution_webhook(request: Request):
                 })
                 logging.info(f"Auto-created contact from WhatsApp: {customer_name} ({from_number})")
                 
+                # Ask WhatsApp for the sender's saved name when the message did
+                # not carry one. Without this a contact the business has saved
+                # in its own address book still shows as "Contact 1234", which
+                # is a label we invented for someone it already knows.
+                async def _fetch_name(uid, cid, ref):
+                    try:
+                        ws = get_whatsapp_service(db)
+                        if not hasattr(ws, "fetch_contact_name"):
+                            return
+                        name = await ws.fetch_contact_name(uid, ref)
+                        if not name:
+                            return
+                        # Only replace a name we made up, never one that has
+                        # since been set from a better source.
+                        current = await db.customers.find_one({"_id": cid}, {"name": 1}) or {}
+                        if _is_invented_contact_name(current.get("name")):
+                            await db.customers.update_one({"_id": cid}, {"$set": {"name": name}})
+                            logging.info(f"Named new contact from WhatsApp: {name}")
+                    except Exception as exc:
+                        logging.debug(f"Could not fetch contact name: {exc}")
+                asyncio.create_task(_fetch_name(
+                    user["_id"], customer_id, remote_jid_val or from_number
+                ))
+
                 # Fetch profile picture in background for new contact
                 async def _fetch_pic(uid, cid, phone):
                     try:

@@ -200,6 +200,26 @@ def _dig(payload: object, *path: str) -> object:
     return current
 
 
+def _payload_push_name(data: dict) -> str:
+    """Find the sender's name wherever the engine put it.
+
+    Only ``pushName`` and ``notifyName`` were read, and this deployment sends
+    neither at the top level, so every new contact was named "Contact 1234"
+    after the last digits of its number. The engine data underneath carries a
+    name, so look there too rather than inventing a label.
+    """
+    for path in (
+        ("pushName",), ("notifyName",),
+        ("_data", "pushName"), ("_data", "notifyName"), ("_data", "pushname"),
+        ("_data", "verifiedBizName"), ("_data", "Info", "PushName"),
+    ):
+        value = str(_dig(data, *path) or "").strip()
+        # A "name" that is really the number tells the business nothing.
+        if value and not _is_placeholder_name(value):
+            return value
+    return ""
+
+
 def _payload_phone(
     data: dict, from_me: bool, own_number: str = "", lid: object = None,
 ) -> Optional[str]:
@@ -687,6 +707,33 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         if update:
             await self.db.customers.update_one({"_id": keep_id}, {"$set": update})
         await self.db.customers.delete_one({"_id": drop_id})
+
+    async def fetch_contact_name(self, user_id: str, contact_ref: str) -> Optional[str]:
+        """Ask WhatsApp for one contact's saved name.
+
+        A message does not always carry the sender's name, but WhatsApp knows
+        it — usually the name the business itself saved in its address book,
+        which is exactly the label it expects to see.
+        """
+        session, base_url = await self._session_and_node(user_id)
+        try:
+            async with httpx.AsyncClient(timeout=15, verify=self.verify_ssl) as client:
+                response = await client.get(
+                    f"{base_url}/api/contacts",
+                    headers=self._headers(),
+                    params={"contactId": str(contact_ref), "session": session},
+                )
+            if response.status_code != 200:
+                return None
+            record = response.json() or {}
+        except Exception as exc:
+            logger.debug("[waha.fetch_contact_name] %s", exc)
+            return None
+        for field in ("name", "pushname", "pushName", "shortName", "verifiedName"):
+            name = str(record.get(field) or "").strip()
+            if name and not _is_placeholder_name(name):
+                return name
+        return None
 
     async def backfill_contact_names(self, user_id: str, limit: int = 200) -> dict:
         """Ask WhatsApp for the real name of contacts still showing a placeholder.
@@ -1822,7 +1869,7 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             # Keep an unresolved LID as the delivery target, but never present
             # its digits as a phone number in the CRM.
             "user": user, "from_number": phone or remote_jid, "body": data.get("body") or "",
-            "push_name": data.get("pushName") or data.get("notifyName") or "", "from_me": from_me,
+            "push_name": _payload_push_name(data), "from_me": from_me,
             "evo_message_id": data.get("id") or "", "remote_jid": remote_jid,
             "phone_number_unavailable": is_lid and not bool(phone),
             "message_type": _message_type(media), "image_url": media.get("url"), "file_name": media.get("filename"),
