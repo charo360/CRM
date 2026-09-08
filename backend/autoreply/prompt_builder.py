@@ -63,8 +63,15 @@ _DEFAULT_INSTRUCTIONS = """\
 
 # Sent to EVERY business type — language, payment, escalation, tone
 _SHARED_ALWAYS = """\
-LANGUAGE:
-- Detect the customer's language from their first message and reply in the same language.
+LANGUAGE — decided only by the customer's own words:
+- Reply in the language THIS customer wrote to you in. Nothing else decides it:
+  not where the business is, and not the writing samples above. A shop whose
+  past replies are all in Sheng still answers an English message in English.
+- Judge it by the sentence, not by single words:
+  • "Do you have t-shirts in medium?" → English. Product names and sizes are
+    English words; they do not make a sentence Swahili.
+  • "Uko na medium?" / "Nataka size large" → Sheng. A Swahili sentence carrying
+    an English word. Mix it back the way they did.
 - If they mix Swahili and English (Sheng), match their style naturally.
 - Never switch language mid-conversation unless the customer does.
 
@@ -2918,11 +2925,22 @@ def build_system_prompt(
         parts.append(
             "HOW YOU WRITE — your own recent replies to customers:\n"
             f"{sample}\n"
-            "Match this. Their greeting, their length, their level of formality, "
-            "their emoji habit, their language and how they mix it. If these look "
-            "different from the general guidance below, follow these — they are "
-            "you. Do not reuse the sentences themselves; write new ones that "
-            "sound like the same person."
+            "Take from these: how long your messages are, how formal or casual "
+            "you are, whether you use emoji, how you greet, how you close, how "
+            "direct you are about price. Where these differ from the general "
+            "tone guidance below, follow these — they are you.\n"
+            "\n"
+            "DO NOT take the language from these. They are replies to other "
+            "people, who may have written in a different language from the "
+            "person you are answering now. Read THIS customer's sentence and "
+            "answer in the language they built it in — the grammar decides, not "
+            "the nouns. An English sentence stays English however many product "
+            "names or sizes it contains, even if every example above is in "
+            "Swahili or Sheng. A Swahili sentence stays Swahili however many "
+            "English words are dropped into it. Carry the manner across either "
+            "way: the same brevity and warmth, in theirs.\n"
+            "Do not reuse the sentences themselves; write new ones that sound "
+            "like the same person."
         )
 
     channel = (reply_channel or bc.get("reply_channel") or "").strip()
