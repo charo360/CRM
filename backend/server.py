@@ -8782,6 +8782,10 @@ async def revenuecat_subscription_webhook(request: Request):
         "_id": event_id or str(uuid.uuid4()),
         "event_type": event_type,
         "app_user_id": event.get("app_user_id"),
+        # Keep every identity RevenueCat says belongs to this event. Recovery
+        # previously searched only app_user_id, so a purchase delivered under
+        # original_app_user_id or an alias was stored but could never be found.
+        "identities": list(dict.fromkeys(str(value) for value in identities if value)),
         "product_id": event.get("new_product_id") or event.get("product_id"),
         "event_timestamp_ms": event.get("event_timestamp_ms"),
         "transaction_id": event_transaction_id or None,
@@ -9255,8 +9259,14 @@ async def claim_revenuecat_purchase(request: Request, user = Depends(get_current
     now_ms = int(datetime.utcnow().timestamp() * 1000)
     event = await db.revenuecat_webhook_events.find_one(
         {
-            "app_user_id": {"$in": candidates},
-            "processed_user_id": None,
+            "$or": [
+                {"app_user_id": {"$in": candidates}},
+                {"identities": {"$in": candidates}},
+            ],
+            # An event already applied to this same billing owner is safe to
+            # replay and repairs a stale/cleared subscription flag. An event
+            # owned by anybody else remains impossible to claim.
+            "processed_user_id": {"$in": [None, owner_id]},
             "event_type": {"$in": _CLAIMABLE_EVENT_TYPES},
             "expiration_at_ms": {"$gt": now_ms},
         },
@@ -9268,6 +9278,16 @@ async def claim_revenuecat_purchase(request: Request, user = Depends(get_current
     plan_id = _revenuecat_plan_id(event.get("product_id"))
     if not plan_id:
         return {"status": "not_found", "reason": "unknown_product"}
+
+    # Reserve the ledger row before granting access. Two accounts can submit
+    # the same anonymous id at nearly the same time; only the first atomic
+    # update may proceed. Replays by that same owner remain repairable.
+    claimed = await db.revenuecat_webhook_events.update_one(
+        {"_id": event["_id"], "processed_user_id": {"$in": [None, owner_id]}},
+        {"$set": {"processed_user_id": owner_id, "claimed_at": datetime.utcnow()}},
+    )
+    if not claimed.matched_count:
+        return {"status": "not_found", "reason": "purchase_already_claimed"}
 
     await db.users.update_one(
         {"_id": owner_id},
@@ -9283,11 +9303,6 @@ async def claim_revenuecat_purchase(request: Request, user = Depends(get_current
             "revenuecat_claimed_at": datetime.utcnow(),
             "revenuecat_claimed_from_event_id": event.get("_id"),
         }},
-    )
-    # Mark it applied so the same payment can never be claimed by anyone else.
-    await db.revenuecat_webhook_events.update_one(
-        {"_id": event["_id"], "processed_user_id": None},
-        {"$set": {"processed_user_id": owner_id, "claimed_at": datetime.utcnow()}},
     )
     logging.info(
         "Claimed unapplied RevenueCat %s (event %s, app_user_id=%s) for %s",

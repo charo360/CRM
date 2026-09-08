@@ -231,6 +231,29 @@ export default function SubscriptionModal({
         }
       }
 
+      // Do not send an existing subscriber through Google Play again. Billing
+      // takes several seconds before replying "already subscribed", which made
+      // a recoverable account-linking problem look like a slow failed payment.
+      // RevenueCat already has the signed store result at this point, so repair
+      // the server record first and only open checkout for a new customer.
+      const existingInfo = await Purchases.getCustomerInfo();
+      if (existingInfo.entitlements.active['premium']) {
+        if (await adoptExistingSubscription()) {
+          Alert.alert(
+            'Subscription restored',
+            'Your existing Zilo subscription has been linked. No new charge was made.',
+          );
+          await onSuccess();
+          onClose();
+        } else {
+          Alert.alert(
+            'Already subscribed',
+            'Google Play confirms that this account already owns Zilo, but the subscription could not be linked automatically. Do not purchase again; contact support so the existing subscription can be attached.',
+          );
+        }
+        return;
+      }
+
       // Open Google Play promptly. If Play says this account already owns a
       // subscription, the error handler below runs the recovery path once.
       const offerings = await Purchases.getOfferings();
