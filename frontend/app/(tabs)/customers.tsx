@@ -54,6 +54,15 @@ interface DashboardSummary {
   total_customers: number;
 }
 
+/** Identify a country from an international number, longest dialling code first. */
+function countryFromPhone(phone?: string | null): Country | undefined {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return undefined;
+  return [...COUNTRIES]
+    .sort((a, b) => b.dial.length - a.dial.length)
+    .find(c => digits.startsWith(c.dial.replace('+', '')));
+}
+
 type ContactSort = 'suggested' | 'recent' | 'name';
 
 const CONTACT_SORTS: { key: ContactSort; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -167,8 +176,11 @@ export default function CustomersScreen() {
   // New customer form
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
+  // Default to the country the business itself is in, worked out from its own
+  // number, rather than assuming one. This was pinned to Kenya, so every
+  // customer added anywhere else was given a Kenyan dialling code.
   const [customerCountry, setCustomerCountry] = useState<Country>(
-    COUNTRIES.find(c => c.code === 'KE')!
+    () => countryFromPhone(user?.phone_number) || COUNTRIES.find(c => c.code === 'US')!
   );
   const [newNotes, setNewNotes] = useState('');
   const [newTags, setNewTags] = useState<string[]>(['New']);
@@ -674,23 +686,28 @@ export default function CustomersScreen() {
   };
 
   const formatPhoneNumber = (phone: string, country?: Country) => {
-    const cleaned = phone.replace(/\D/g, '');
-    if (!cleaned) return cleaned;
-    const c = country || customerCountry;
-    const dial = c.dial.replace('+', '');
+    const raw = String(phone || '').trim();
+    const cleaned = raw.replace(/\D/g, '');
+    if (!cleaned) return '';
+    const dial = (country || customerCountry).dial.replace('+', '');
 
-    // Already E.164 with country code (e.g. 254712...)
-    if (cleaned.startsWith(dial)) {
-      return '+' + cleaned;
-    }
+    // A leading + or 00 means the number already names its own country. This
+    // has to be read before the digits are stripped: stripping first threw the
+    // + away, and every foreign number then had the local code put in front of
+    // it — a US number came out as +254 1 202 699 5029.
+    if (raw.startsWith('+')) return '+' + cleaned;
+    if (raw.startsWith('00')) return '+' + cleaned.replace(/^00/, '');
 
-    // Local format with leading 0 (e.g. 0712...)
-    if (cleaned.startsWith('0')) {
-      return '+' + dial + cleaned.substring(1);
-    }
+    // Local format with a trunk zero: 0712... -> +254712...
+    if (cleaned.startsWith('0')) return '+' + dial + cleaned.slice(1);
 
-    // Bare local number without country code
-    return '+' + dial + cleaned;
+    // Already carries this country's own code.
+    if (cleaned.startsWith(dial)) return '+' + cleaned;
+
+    // Bare digits. Assume the selected country only while the number is short
+    // enough to be a local one; anything longer already carries a country code,
+    // and adding a second one corrupts it.
+    return cleaned.length <= 10 ? '+' + dial + cleaned : '+' + cleaned;
   };
 
   const toggleContactSelection = (contactId: string) => {
