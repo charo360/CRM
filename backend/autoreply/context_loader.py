@@ -103,7 +103,7 @@ async def load_context(db, user_id, customer_id, user: dict, message: str = "") 
 
     business_config = _build_business_config(user, settings, business_type)
 
-    owner_voice = await _load_owner_voice(db, user_id)
+    owner_voice = await _load_owner_voice(db, user_id, message)
 
     return {
         "messages": messages,
@@ -115,7 +115,33 @@ async def load_context(db, user_id, customer_id, user: dict, message: str = "") 
     }
 
 
-async def _load_owner_voice(db, user_id, limit: int = 8) -> List[str]:
+# Words that mark a sentence as Swahili or Sheng rather than English. Ordinary
+# function words, not nouns: a product name or a size is borrowed into both
+# languages and says nothing about which one the sentence is built in.
+_SWAHILI_MARKERS = {
+    "ni", "na", "ya", "wa", "za", "kwa", "iko", "uko", "tuna", "nina", "sina",
+    "unataka", "nataka", "utaweza", "naweza", "kuna", "hakuna", "ngapi", "gani",
+    "sawa", "poa", "niaje", "habari", "asante", "karibu", "leo", "kesho",
+    "nitakuja", "nitatuma", "unaweza", "bei", "pesa", "moja", "mbili", "tu",
+    "mzuri", "mambo", "vipi", "nini", "lini", "wapi", "ndio", "hapana",
+}
+
+
+def _is_swahili(text: str) -> bool:
+    """Whether a sentence is built in Swahili/Sheng rather than English.
+
+    Decided on function words only. "Do you have t-shirts in medium?" is English
+    however many product words it holds; "Uko na medium?" is Sheng despite the
+    English noun.
+    """
+    words = [w.strip(".,!?*_-()").lower() for w in str(text or "").split()]
+    if not words:
+        return False
+    hits = sum(1 for w in words if w in _SWAHILI_MARKERS)
+    return hits >= 2 or (hits == 1 and len(words) <= 4)
+
+
+async def _load_owner_voice(db, user_id, message: str = "", limit: int = 8) -> List[str]:
     """Recent replies the owner typed themselves, to write in their voice.
 
     Rules about tone can only describe a voice from outside. The owner's own
@@ -139,6 +165,16 @@ async def _load_owner_voice(db, user_id, limit: int = 8) -> List[str]:
     except Exception:
         return []
 
+    # Show only replies written in the language this customer is using.
+    #
+    # Telling the model to keep the samples' manner but not their language does
+    # not hold: across five wordings the drift ranged from none to every reply,
+    # with an owner who writes Sheng answering plain English questions in
+    # Swahili. Examples pull harder than instructions about examples. Removing
+    # the mismatched ones removes the pull instead of arguing with it, and when
+    # none match the general tone rules still apply.
+    wants_swahili = _is_swahili(message) if message else None
+
     seen: set = set()
     voice: List[str] = []
     for row in raw:
@@ -146,6 +182,8 @@ async def _load_owner_voice(db, user_id, limit: int = 8) -> List[str]:
         # Skip the very short ("ok", "yes") and the very long: neither shows
         # how this person writes to a customer.
         if not (12 <= len(text) <= 320):
+            continue
+        if wants_swahili is not None and _is_swahili(text) != wants_swahili:
             continue
         key = text.lower()
         if key in seen:
