@@ -63,3 +63,30 @@ def test_the_empty_catalog_instruction_no_longer_announces_an_empty_shop():
     assert "NO CATALOG IS LOADED" in source
     assert "ask what they are looking for" in source
     assert "notify_owner" in source
+
+
+def test_the_examples_cannot_be_copied_by_a_real_business():
+    """Concrete examples get reproduced word for word by any business in the
+    same trade — two different garages sent an identical greeting when the
+    examples used a garage. The examples now come from trades no customer of
+    this product is likely to be in, so copying one is obviously wrong.
+    """
+    assert "piano tuner" in _SHARED_ALWAYS
+    assert "beekeeper" in _SHARED_ALWAYS
+    # The trades that actually use this product must not appear as ready-made
+    # greetings to lift.
+    for trade in ("garage:", "salon:", "bakery:"):
+        assert trade not in _SHARED_ALWAYS
+
+
+def test_the_software_openers_are_named_and_banned():
+    """Removing the examples once produced "How can I assist you today?" from
+    every business — blandness is the other failure mode, so it is banned by
+    name rather than left to taste."""
+    assert "How can I assist you today?" in _SHARED_ALWAYS
+    assert "What can I help you with today?" in _SHARED_ALWAYS
+    assert "what software says" in _SHARED_ALWAYS
+
+
+def test_two_shops_in_one_trade_are_told_to_differ():
+    assert "same line of work should not open with the same sentence" in _SHARED_ALWAYS
