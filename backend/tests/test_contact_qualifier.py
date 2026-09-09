@@ -139,3 +139,27 @@ def test_baby_clothes_are_not_mistaken_for_an_endearment():
     reply, verdict, _ = qualify(None, "do you have baby clothes?")
     assert reply is True
     assert verdict == "customer"
+
+
+# ── who the owner is interrupted for ─────────────────────────────────────
+
+def test_the_owner_is_only_told_about_people_who_look_like_customers():
+    # From a real complaint: someone sent "hey man" and the owner got a
+    # "new contact just messaged you" alert. That notification is for people
+    # who turn out to be customers, not for everyone who says hello.
+    assert qualify(None, "hey man")[1] != "customer"
+    assert qualify(None, "Niaje")[1] != "customer"
+    assert qualify(None, "Hi")[1] != "customer"
+    assert qualify(None, "sasa")[1] != "customer"
+
+
+def test_a_greeting_then_a_question_does_qualify():
+    # The alert fires on the message that shows intent, not only the first
+    # one — so someone who opens with a greeting is not lost.
+    assert qualify(None, "how much is the hoodie?", incoming("Niaje"))[1] == "customer"
+    assert qualify(None, "uko na size 40?", incoming("Hi", "sasa"))[1] == "customer"
+
+
+def test_business_words_qualify_in_either_language():
+    for text in ("bei ya hoodie?", "nataka kuorder", "do you deliver?", "can I pay on delivery?"):
+        assert qualify(None, text)[1] == "customer", text

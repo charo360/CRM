@@ -423,6 +423,46 @@ def _contact_activity_key(contact: dict) -> datetime:
     return datetime.min
 
 
+async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
+    """Tell the owner a new customer has messaged.
+
+    Defined at module level because it is called once the contact qualifies
+    as a customer, which can be their third message — by then the branch that
+    creates a new contact has long since not run, and a function defined
+    inside it would be unbound.
+    """
+    try:
+        from whatsapp_service import owner_whatsapp_number
+        owner_phone = owner_whatsapp_number(owner_user)
+        if not owner_phone:
+            return
+        # Don't notify if owner IS the new contact (self-message edge case).
+        # Compared on digits: the same line is stored as
+        # +254700000001 in one place and 254700000001 in another.
+        if _same_number_safe(owner_phone, cust_phone):
+            return
+        ws = get_whatsapp_service(db)
+        preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
+        notification = (
+            f"🆕 *New contact just messaged you!*\n\n"
+            f"👤 *{cust_name}*\n"
+            f"📱 {_display_contact_number(cust_phone)}\n\n"
+            f"💬 _{preview}_\n\n"
+            f"Open your CRM app to view and reply."
+        )
+        await ws.send_message(
+            user_id=owner_user["_id"],
+            to_number=owner_phone,
+            message=notification,
+            # A fixed template, not something a model wrote, so it
+            # costs one plan message rather than the model's rate.
+            send_context="new_contact_alert",
+        )
+        logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
+    except Exception as e:
+        logging.error(f"Failed to notify owner of new contact: {e}")
+
+
 def _same_number_safe(a, b) -> bool:
     """Digits-only comparison that never raises on missing values."""
     da = "".join(ch for ch in str(a or "") if ch.isdigit())
@@ -11396,35 +11436,11 @@ async def evolution_webhook(request: Request):
                 asyncio.create_task(_fire_customer_created_wf(user["_id"], customer_id, from_number))
 
                 # Notify owner of new contact messaging for the first time
-                async def _notify_owner_new_contact(owner_user, cust_name, cust_phone, msg_body):
-                    try:
-                        from whatsapp_service import owner_whatsapp_number
-                        owner_phone = owner_whatsapp_number(owner_user)
-                        if not owner_phone:
-                            return
-                        # Don't notify if owner IS the new contact (self-message edge case)
-                        if owner_phone == cust_phone:
-                            return
-                        ws = get_whatsapp_service(db)
-                        preview = msg_body[:100] + ("..." if len(msg_body) > 100 else "")
-                        notification = (
-                            f"🆕 *New contact just messaged you!*\n\n"
-                            f"👤 *{cust_name}*\n"
-                            f"📱 {_display_contact_number(cust_phone)}\n\n"
-                            f"💬 _{preview}_\n\n"
-                            f"Open your CRM app to view and reply."
-                        )
-                        await ws.send_message(
-                            user_id=owner_user["_id"],
-                            to_number=owner_phone,
-                            message=notification,
-                            send_context="auto_reply"
-                        )
-                        logging.info(f"Owner notified of new contact: {cust_name} ({cust_phone})")
-                    except Exception as e:
-                        logging.error(f"Failed to notify owner of new contact: {e}")
 
-                asyncio.create_task(_notify_owner_new_contact(user, customer_name, from_number, body))
+                # Not fired here any more. A first message is often just
+                # "hey man", and the owner was interrupted for it. The alert
+                # now waits until the contact looks like a customer — see the
+                # qualifier below.
 
                 # Also send Expo push notification to owner's device(s)
                 async def _push_new_contact(owner_id, cust_name, msg_body):
@@ -11890,6 +11906,20 @@ async def evolution_webhook(request: Request):
                 # the mistake nobody ever hears about.
                 from contact_qualifier import qualify as _qualify
                 _ok_to_reply, _verdict, _why = _qualify(customer, body, history)
+
+                # Tell the owner about a new person once we know they are a
+                # customer — asking a price, an item, delivery — rather than on
+                # a bare "hey man". Someone who opens with a greeting and gets
+                # to the point on their third message still counts, which
+                # firing on the first message could never do.
+                if _verdict == "customer" and customer and not customer.get("owner_alerted"):
+                    asyncio.create_task(
+                        _notify_owner_new_contact(user, customer_name, from_number, body)
+                    )
+                    if customer_id:
+                        await db.customers.update_one(
+                            {"_id": customer_id}, {"$set": {"owner_alerted": True}}
+                        )
                 if not _ok_to_reply:
                     logging.info(
                         "[Qualify] holding auto-reply for %s (%s): %s",
