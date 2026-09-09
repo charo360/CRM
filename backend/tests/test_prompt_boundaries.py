@@ -92,3 +92,19 @@ def test_a_greeting_never_triggers_a_list_in_any_business_type():
         assert "for every service listing" not in text, btype
         assert "for every listing" not in text, btype
         assert "for every product listing" not in text, btype
+
+
+def test_a_greeting_is_answered_as_a_greeting_not_a_sales_question():
+    # "Hi" used to get "What service are you interested in today?" — which
+    # turns a hello into a pitch before the person has said anything. A shop
+    # owner says hello back and waits.
+    for btype in ("retail", "restaurant", "salon", "spa", "repair", "hotel"):
+        text = prompt(btype)
+        assert "not a request to be\n  sold to" in text or "not a request to be sold to" in text, btype
+        assert "Uko poa?" in text, btype
+        assert 'not "what are you looking for today?" either' in text, btype
+
+
+def test_the_ai_waits_for_the_customer_to_raise_a_need():
+    for btype in ("retail", "salon", "hotel"):
+        assert "Wait for them to bring up what they need" in prompt(btype), btype
