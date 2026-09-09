@@ -415,6 +415,20 @@ def register_paystack_routes(
         user_id = str(business_owner_id(user))
         return {"entries": await list_recent_ledger(db, user_id, min(limit, 100))}
 
+    @api_router.get("/paystack/earnings")
+    async def paystack_earnings(user=Depends(get_current_user)):
+        """What has been received, what Paystack has settled, what is still held."""
+        from paystack_earnings import earnings_summary
+
+        return await earnings_summary(db, user)
+
+    @api_router.get("/paystack/earnings/transactions")
+    async def paystack_earnings_transactions(limit: int = 30, user=Depends(get_current_user)):
+        """The individual payments behind the totals."""
+        from paystack_earnings import recent_transactions
+
+        return {"transactions": await recent_transactions(db, user, limit=limit)}
+
     @api_router.post("/paystack/transaction/initialize")
     async def paystack_initialize(body: dict, user=Depends(get_current_user)):
         email = (body.get("email") or "").strip()

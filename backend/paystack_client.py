@@ -183,6 +183,22 @@ class PaystackClient:
 
         return collected
 
+    async def list_settlements(
+        self, *, subaccount: str = "", per_page: int = 50, page: int = 1
+    ) -> list[Dict[str, Any]]:
+        """Settlements Paystack has paid out, newest first.
+
+        This is the only source for what has actually reached the business's
+        bank or M-Pesa. Our own ledger knows a charge succeeded, which is a
+        different thing: money can be taken and not yet settled.
+        """
+        params: Dict[str, Any] = {"perPage": per_page, "page": page}
+        if subaccount:
+            params["subaccount"] = subaccount
+        data = await self._request("GET", "/settlement", params=params)
+        rows = data.get("data")
+        return rows if isinstance(rows, list) else []
+
     async def create_subaccount(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         data = await self._request("POST", "/subaccount", json=payload)
         return data.get("data") or {}

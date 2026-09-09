@@ -1007,6 +1007,16 @@ export default function AccountScreen() {
               <Text style={styles.paymentSetupButtonText}>Set up payments</Text>
               <Ionicons name="chevron-forward" size={18} color="#062414" />
             </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.earningsLink}
+              // expo-router regenerates its route union on the next dev
+              // server start; the file exists.
+              onPress={() => router.push('/earnings' as never)}
+            >
+              <Ionicons name="stats-chart-outline" size={17} color="#25D366" />
+              <Text style={styles.earningsLinkText}>View earnings & transactions</Text>
+              <Ionicons name="chevron-forward" size={16} color="#8B9DC3" />
+            </TouchableOpacity>
             <Text style={styles.paymentSetupFootnote}>
               No website or Paystack login required. Paid catalog orders appear in Sales.
             </Text>
@@ -1668,6 +1678,17 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '800',
   },
+  earningsLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    marginTop: 10,
+    paddingVertical: 11,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#0F1A2E',
+  },
+  earningsLinkText: { color: '#E9EDEF', fontSize: 13, fontWeight: '600', flex: 1 },
   paymentSetupFootnote: {
     color: '#8A9BB5',
     fontSize: 11,
