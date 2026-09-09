@@ -3042,6 +3042,8 @@ Return a JSON array ONLY (no markdown fences, no explanation):
 
 Rules:
 - draft_content must be fully written, not a template. Write it as if you are {biz_name}.
+- HONESTY: never invent a price, a discount, stock, a delivery time or a commitment. Use only
+  figures given above. A number invented here is one the business will be held to.
 - Each action must come from a different signal to maximise coverage.
 - Confidence < 0.55 should not be included.
 - Mix action types — don't return all emails.
@@ -3196,6 +3198,8 @@ Return a JSON array ONLY (no markdown, no explanation):
 ]
 
 Rules:
+- HONESTY: never invent a price, a discount, stock, a delivery time or a commitment, and never
+  invent a contact name, email or URL. Leave a field empty rather than filling it with a guess.
 - Every item must have contact_name.
 - If contact_info is an email or phone, set url to "" unless there is also a separate public post to reference.
 - NEVER use {biz_name}'s own website, zilo.pro, zilo.app, or placeholder domains as url.
