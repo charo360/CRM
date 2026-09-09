@@ -5368,6 +5368,11 @@ async def update_customer(customer_id: str, update: CustomerUpdate, user = Depen
 @api_router.delete("/customers/{customer_id}")
 async def delete_customer(customer_id: str, user = Depends(get_current_user)):
     """Delete a customer"""
+    # business_id was used twice here and never assigned, so every delete
+    # raised NameError and returned 500. Resolved the way every other
+    # customer route does it: a team member acts for the business they
+    # belong to, an owner for themselves.
+    business_id = user.get("business_id", user["_id"])
     result = await db.customers.delete_one({"_id": customer_id, "user_id": business_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Customer not found")
