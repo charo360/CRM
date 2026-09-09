@@ -104,10 +104,19 @@ def test_unknown_or_dropped_choices_cost_one_message():
         assert model_message_cost(value) == 1
 
 
-def test_the_apps_own_alerts_do_not_use_the_customer_allowance():
-    # The daily digest, the motivation message and "new contact messaged you"
-    # all go to the owner's own WhatsApp. On one live account 7 of 21 billed
-    # messages were the app talking to its user, a third of the allowance.
+def test_scheduled_owner_pushes_are_free_but_alerts_are_billed():
+    # Across every account, 47 of 67 outbound messages were the daily digest
+    # or motivation line going to the owner. Those are the app talking to its
+    # own user. The "new contact messaged you" alert is different: a real
+    # customer message triggered it, so it is billed.
+    from whatsapp_service import UNBILLED_OWNER_CONTEXTS
+
+    assert UNBILLED_OWNER_CONTEXTS == {"digest", "motivation", "zilo_morning_briefing"}
+    assert "auto_reply" not in UNBILLED_OWNER_CONTEXTS
+
+
+def test_owner_is_recognised_on_either_of_their_numbers():
+    # Alerts have gone to both the linked WhatsApp and the signup number.
     from whatsapp_service import _same_number
 
     owner_whatsapp, owner_login = "12026995029", "+16505553434"

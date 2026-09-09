@@ -40,6 +40,14 @@ _DAILY_SEND_LIMITS: Dict[str, int] = {
 }
 
 
+# Scheduled pushes the app sends its own user: the daily digest, the daily
+# motivation line, and the morning briefing. Nobody asked for these and no
+# customer sees them, so they do not use the customer allowance. The
+# "new contact messaged you" alert is deliberately NOT here — a real customer
+# message triggered it, so it is billed like any other reply.
+UNBILLED_OWNER_CONTEXTS = {"digest", "motivation", "zilo_morning_briefing"}
+
+
 def _same_number(a, b) -> bool:
     """True when two phone numbers are the same line, however they are written."""
     da = "".join(ch for ch in str(a or "") if ch.isdigit())
@@ -617,13 +625,14 @@ class WhatsAppService:
                 "from_number": to_number,
                 "created_at": datetime.utcnow(),
                 "send_context": send_context,
-                # The daily digest, the motivation message and the "new contact
-                # messaged you" alert all go to the owner's own WhatsApp. They
-                # are the app talking to its user, not the business reaching a
-                # customer, so they must not eat the customer allowance.
-                "message_cost": 0 if any(_same_number(to_number, n)
-                                         for n in limits.get("owner_numbers") or [])
-                                else limits.get("message_cost", 1),
+                # A scheduled push to the owner's own number is the app
+                # talking to its user, so it is free. Everything else is
+                # billed, the new-contact alert included.
+                "message_cost": 0 if (
+                    send_context in UNBILLED_OWNER_CONTEXTS
+                    and any(_same_number(to_number, n)
+                            for n in limits.get("owner_numbers") or [])
+                ) else limits.get("message_cost", 1),
             }
             if media_url:
                 msg_doc["image_url"] = media_url
