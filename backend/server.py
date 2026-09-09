@@ -1126,6 +1126,38 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
     user = await find_user_by_jwt_id(payload["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found", headers={"X-Account-Deleted": "true"})
+
+    # A team member's JWT identifies the user, but membership is live state.
+    # Re-check it on every request so suspension/removal takes effect even when
+    # the member still has an unexpired token on another phone or browser.
+    user_id = str(user.get("_id"))
+    business_id = str(user.get("business_id") or user_id)
+    if business_id == user_id and user.get("role") in (TeamMemberRole.EMPLOYEE, TeamMemberRole.MANAGER):
+        # Repair email invitations created by older builds, which accidentally
+        # stored the member's own user id as its business id.
+        linked_member = await db.team_members.find_one({"user_id": user_id})
+        if linked_member and str(linked_member.get("business_id")) != user_id:
+            business_id = str(linked_member["business_id"])
+            user["business_id"] = business_id
+            await db.users.update_one(
+                {"_id": user["_id"]},
+                {"$set": {"business_id": business_id, "role": linked_member.get("role", user.get("role"))}},
+            )
+    if business_id != user_id:
+        identity_filters = [{"user_id": user_id}]
+        if user.get("phone_number"):
+            identity_filters.append({"phone_number": user["phone_number"]})
+        if user.get("email"):
+            identity_filters.append({"email": user["email"]})
+        member = await db.team_members.find_one({
+            "business_id": business_id,
+            "$or": identity_filters,
+        })
+        if not member or member.get("status") != "active":
+            raise HTTPException(status_code=403, detail="Your team access has been suspended or removed.")
+        # Use the live role from the membership record immediately, including
+        # for JWTs issued before an owner changed the member's role.
+        user["role"] = member.get("role", TeamMemberRole.EMPLOYEE)
     return user
 
 
@@ -3615,13 +3647,13 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
     if phone:
         if len(phone) < 8:
             raise HTTPException(status_code=400, detail="Phone number must include country code (e.g. +1234567890)")
-        existing = await db.team_members.find_one({"business_id": business_id, "phone_number": phone})
+        existing = await db.team_members.find_one({"phone_number": phone})
         if existing:
-            raise HTTPException(status_code=400, detail="This phone number is already on your team")
+            raise HTTPException(status_code=400, detail="This phone number already belongs to a Zilo team")
     if email:
-        existing = await db.team_members.find_one({"business_id": business_id, "email": email})
+        existing = await db.team_members.find_one({"email": email})
         if existing:
-            raise HTTPException(status_code=400, detail="This email is already on your team")
+            raise HTTPException(status_code=400, detail="This email already belongs to a Zilo team")
 
     now = datetime.utcnow()
     member_id = str(uuid.uuid4())
@@ -3632,8 +3664,7 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
     if email:
         existing_user = await db.users.find_one({"email": email})
         if existing_user:
-            # Re-use existing user if already registered (e.g. they were an owner elsewhere)
-            linked_user_id = existing_user["_id"]
+            raise HTTPException(status_code=400, detail="This email already has a Zilo account. Use another email for this team member.")
         else:
             temp_password = _generate_temp_password()
             new_user_id = str(uuid.uuid4())
@@ -3650,7 +3681,7 @@ async def _create_team_member_doc(db, invite: TeamMemberInvite, business_id: str
                 "business_name": biz_name,
                 "owner_name": invite.name.strip(),
                 "role": canonical_role,
-                "business_id": new_user_id,  # user's own business (data isolation)
+                "business_id": business_id,
                 "auth_provider": "email_web",
                 "subscription_active": False,
                 "setup_complete": True,
@@ -3772,6 +3803,15 @@ async def update_team_member(member_id: str, updates: TeamMemberUpdate, user = D
     
     if update_data:
         await db.team_members.update_one({"_id": member_id}, {"$set": update_data})
+        # Keep the linked login identity in sync. Access status is still checked
+        # against team_members on every request by get_current_user.
+        user_updates = {}
+        if "name" in update_data:
+            user_updates["owner_name"] = update_data["name"]
+        if "role" in update_data:
+            user_updates["role"] = update_data["role"]
+        if user_updates and member.get("user_id"):
+            await db.users.update_one({"_id": member["user_id"]}, {"$set": user_updates})
     
     return {"status": "success", "message": "Team member updated"}
 
