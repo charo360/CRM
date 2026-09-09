@@ -340,6 +340,22 @@ async def process_message(
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
         if action_results.get("order_number"):
             reply_text += f"\n\n🧾 *Order #:* {action_results['order_number']}"
+            # Businesses that set up online payment can be paid here and now.
+            # Those that have not are left exactly as they were: a total, and
+            # the owner collecting it their own way.
+            try:
+                from chat_checkout import checkout_link_for_order
+                _order = await db.orders.find_one(
+                    {"user_id": user_id, "order_number": action_results["order_number"]}
+                )
+                if _order:
+                    _pay = await checkout_link_for_order(
+                        db, user, _order, customer=customer, phone=from_number
+                    )
+                    if _pay:
+                        reply_text += "\n\n\U0001f4b3 Pay now:\n" + _pay
+            except Exception as exc:
+                logger.warning("[AutoReplyV2] no checkout link: %s", exc)
         if storefront_url:
             reply_text += f"\n\n🛍️ Browse the full catalog & pay online:\n{storefront_url}"
         is_fallback = response_data.get("_is_fallback", False)
