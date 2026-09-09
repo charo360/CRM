@@ -689,7 +689,13 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
                     raise Exception(f"Claude API Error {response.status_code}: {response.text}")
                     
                 data = response.json()
-                return data['content'][0]['text']
+                # Claude 4.7 and later can put a thinking block before the
+                # answer, so the first block is not necessarily the text.
+                return "".join(
+                    c.get("text", "")
+                    for c in data.get("content", [])
+                    if c.get("type") == "text"
+                )
         except Exception as e:
             logger.error(f"Claude Call Failed: {e}")
             raise e

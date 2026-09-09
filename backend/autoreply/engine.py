@@ -516,7 +516,14 @@ async def _call_claude_http(client_config: Dict, model_name: str, system_prompt:
         resp = await http.post(client_config["endpoint"], json=payload, headers=headers, timeout=30.0)
         if resp.status_code != 200:
             raise RuntimeError(f"Claude API {resp.status_code}: {resp.text[:300]}")
-        return resp.json()["content"][0]["text"]
+        # Claude 4.7 and later can return a thinking block ahead of the
+        # answer, so take the text blocks rather than the first one. Reading
+        # content[0] raised KeyError on every reply, which the caller turned
+        # into the "having a little trouble" fallback.
+        data = resp.json()
+        return "".join(
+            c.get("text", "") for c in data.get("content", []) if c.get("type") == "text"
+        )
 
 
 # ── JSON validation ───────────────────────────────────────────────────────────
