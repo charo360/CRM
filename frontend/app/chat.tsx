@@ -182,6 +182,19 @@ export default function ChatScreen() {
       return;
     }
     const wantAgent = mode === 'agent';
+    // A Personal contact is held by the qualifier, so the agent would sit
+    // switched on and never fire, with nothing on screen to say why. Asking
+    // for the agent is asking for this contact to be treated as a customer.
+    if (wantAgent && isPersonal) {
+      setIsPersonal(false);
+      try {
+        await apiClient.put(`/customers/${customerId}`, { is_personal: false });
+      } catch (error) {
+        setIsPersonal(true);
+        Alert.alert('Not changed', 'Could not switch this contact to Business.');
+        return;
+      }
+    }
     if (wantAgent !== autoReplyEnabled) await setAutoReply(wantAgent);
   };
 
@@ -206,6 +219,10 @@ export default function ChatScreen() {
   const togglePersonal = async () => {
     const newVal = !isPersonal;
     setIsPersonal(newVal); // Optimistic update
+    // The other half of the same contradiction: marking someone Personal
+    // while the agent is on would leave the chip reading "AI agent" while
+    // the qualifier quietly holds every reply.
+    if (newVal && autoReplyEnabled) await setAutoReply(false);
     setToastMessage(newVal ? 'Marked as Personal' : 'Marked as Business');
     setShowToast(true);
     try {
@@ -1076,7 +1093,11 @@ export default function ChatScreen() {
                     <Text style={[styles.sheetTitle, active && { color: '#25D366' }]}>
                       {title}
                     </Text>
-                    <Text style={styles.sheetSubtitle}>{subtitle}</Text>
+                    <Text style={styles.sheetSubtitle}>
+                      {mode === 'agent' && isPersonal
+                        ? 'Marked Personal, so the AI stays quiet. Choosing this treats them as a customer.'
+                        : subtitle}
+                    </Text>
                   </View>
                   {active && <Ionicons name="checkmark" size={20} color="#25D366" />}
                 </TouchableOpacity>
