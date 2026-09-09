@@ -8403,7 +8403,12 @@ async def generate_broadcast_message(request: AIMessageRequest, user = Depends(g
         drafter = get_drafter()
         generated_message = await drafter.draft_broadcast_message(
             prompt=request.prompt,
-            business_type=request.business_type
+            business_type=request.business_type or user.get("business_type"),
+            business_name=user.get("business_name") or "",
+            # The owner's own model choice, like every other draft. Free plans
+            # can only hold "standard", so this cannot select a paid model on
+            # its own. Nothing is billed here - a draft is charged on send.
+            model_pref=(user.get("settings") or {}).get("ai_model", "standard"),
         )
         
         return {"message": generated_message}

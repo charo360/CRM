@@ -4,7 +4,7 @@ Generates personalized follow-up messages using OpenAI API
 """
 import os
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 from datetime import datetime
 from openai import OpenAI
 
@@ -716,6 +716,67 @@ Write ONLY the message text. No quotes, no explanations, no subject lines."""
         except Exception as e:
             logger.error(f"Claude Call Failed: {e}")
             raise e
+
+    async def draft_broadcast_message(
+        self,
+        prompt: str,
+        business_type: Optional[str] = None,
+        business_name: str = "",
+        model_pref: str = "standard",
+    ) -> str:
+        """Draft one WhatsApp broadcast from a short brief.
+
+        The endpoint has always called this; it was never written, so every
+        "write with AI" in Broadcast raised AttributeError and returned 500.
+
+        A broadcast goes to many people at once, so the rules that matter are
+        the honesty ones: it must not invent an offer, a price or a deadline
+        the owner never mentioned. Whatever it makes up here is sent to every
+        customer at once and cannot be taken back.
+        """
+        trade = (business_type or "business").replace("_", " ")
+        system = (
+            f"You write WhatsApp broadcasts for a {trade}. You are the owner, "
+            "not a marketing agency.\n\n"
+            "RULES:\n"
+            "1. Output ONLY the message text. No subject line, no notes, no quotes.\n"
+            "2. 2-4 short lines. A broadcast people actually read is short. If "
+            "the brief asks for a specific length, follow the brief instead.\n"
+            "3. HONESTY: use only offers, prices, dates and products named in the "
+            "brief. Never invent a discount, a deadline or an item. This goes to "
+            "every customer at once and cannot be taken back.\n"
+            "4. Write to one person, not a crowd — \"you\", not \"our valued customers\".\n"
+            "5. BANNED: \"Dear valued customer\", \"We are pleased to announce\", "
+            "\"Don't miss out\", \"Hurry while stocks last\", \"Act now\", "
+            "\"We are excited to\".\n"
+            "6. Match the language of the brief. If it is written in Swahili or "
+            "Sheng, reply in the same.\n"
+            "7. One clear next step: reply, visit, or order.\n"
+            "8. Emojis only where they earn their place. Never more than two.\n"
+            "9. PLACEHOLDERS: if the brief asks for {{name}}, write {{name}} "
+            "exactly, braces and all. It is swapped for each customer's real "
+            "name when the message is sent. Never put a name of your own there, "
+            "and never write \"[Name]\" or \"Customer\"."
+        )
+        user_msg = (
+            (f"Business: {business_name}\n" if business_name else "")
+            + f"What to say: {prompt}\n\n"
+            "Write the broadcast."
+        )
+
+        try:
+            text = await self._call_llm(f"{system}\n\n{user_msg}", model_pref=model_pref)
+        except Exception as exc:
+            logger.error(f"Broadcast draft failed: {exc}")
+            raise
+
+        text = (text or "").strip()
+        # Models sometimes wrap a single message in quotes or a code fence.
+        if text.startswith("```"):
+            text = text.strip("`").lstrip("text").strip()
+        if len(text) > 1 and text[0] == text[-1] and text[0] in "\"'":
+            text = text[1:-1].strip()
+        return text
 
     async def draft_social_post(
         self,
