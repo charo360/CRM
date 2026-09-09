@@ -971,15 +971,12 @@ async def execute_broadcast_automations():
 
                 # Find customers who received broadcast but haven't replied since
                 customer_ids = broadcast.get("customer_ids")
-                query = {"user_id": user_id}
-                if customer_ids:
-                    query["_id"] = {"$in": customer_ids}
-                elif broadcast.get("filter_type") == "returning":
-                    query["tags"] = "Returning"
-                elif broadcast.get("filter_type") == "vip":
-                    query["tags"] = "VIP"
-                elif broadcast.get("filter_type") == "new":
-                    query["tags"] = "New"
+                # This loop runs hourly with nobody watching, so it is the one
+                # that most needs to send only to the audience the owner saw.
+                from customer_audience import audience_query
+                query = audience_query(
+                    user_id, broadcast.get("filter_type", "all"), customer_ids
+                )
 
                 customers = await db.customers.find(query).to_list(None)
 
@@ -1040,13 +1037,10 @@ async def execute_broadcast_automations():
                 if not message:
                     continue
 
-                query = {"user_id": user_id}
-                if filter_type == "returning":
-                    query["tags"] = "Returning"
-                elif filter_type == "vip":
-                    query["tags"] = "VIP"
-                elif filter_type == "new":
-                    query["tags"] = "New"
+                # A recurring broadcast fires every week or month on its own,
+                # so a wrong audience here repeats forever.
+                from customer_audience import audience_query
+                query = audience_query(user_id, filter_type)
 
                 customers = await db.customers.find(query).to_list(None)
                 if not customers:
@@ -1756,21 +1750,12 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
     # Rate-limit: max 5 new broadcasts per minute per tenant
     from rate_limiter import check_rate_limit
     await check_rate_limit("broadcast", business_id)
-    # Get recipients based on filter
-    query = {"user_id": business_id}
-
-    if broadcast.filter_type == "returning":
-        query["tags"] = "Returning"
-    elif broadcast.filter_type == "vip":
-        query["tags"] = "VIP"
-    elif broadcast.filter_type == "new":
-        query["tags"] = "New"
-    elif broadcast.filter_type in ("custom", "group") or broadcast.customer_ids:
-        # Custom group / specific IDs — must have IDs, otherwise refuse
-        if not broadcast.customer_ids:
-            raise HTTPException(status_code=400, detail="customer_ids required for custom/group broadcast")
-        query["_id"] = {"$in": broadcast.customer_ids}
-    # else filter_type == "all" — no extra filter, send to everyone
+    # Recipients, using the same definition of "a customer" that the Broadcast
+    # screen counted, so the audience shown is the audience sent to.
+    from customer_audience import audience_query
+    if broadcast.filter_type in ("custom", "group") and not broadcast.customer_ids:
+        raise HTTPException(status_code=400, detail="customer_ids required for custom/group broadcast")
+    query = audience_query(business_id, broadcast.filter_type, broadcast.customer_ids)
 
     customers = await db.customers.find(query).to_list(None)  # no hard cap
     
@@ -2008,21 +1993,15 @@ async def resend_broadcast(broadcast_id: str, background_tasks: BackgroundTasks,
     if not original:
         raise HTTPException(status_code=404, detail="Broadcast not found")
 
-    # Build recipients same way as original
-    query = {"user_id": business_id}
+    # Build recipients same way as original.
+    from customer_audience import audience_query
     filter_type = original.get("filter_type", "all")
-    if filter_type == "returning":
-        query["tags"] = "Returning"
-    elif filter_type == "vip":
-        query["tags"] = "VIP"
-    elif filter_type == "new":
-        query["tags"] = "New"
-    elif filter_type in ("custom", "group") or original.get("customer_ids"):
-        stored_ids = original.get("customer_ids")
-        if stored_ids:
-            query["_id"] = {"$in": stored_ids}
-        # else old broadcast with no saved ids — fall back to "all" for this business
-    # else "all" — no extra filter
+    stored_ids = original.get("customer_ids")
+    if filter_type in ("custom", "group") and not stored_ids:
+        # An old broadcast saved before ids were stored. Keep the previous
+        # behaviour and treat it as "all" rather than resending to nobody.
+        filter_type = "all"
+    query = audience_query(business_id, filter_type, stored_ids)
     customers = await db.customers.find(query).to_list(None)
 
     image_urls = original.get("image_urls") or ([original["image_url"]] if original.get("image_url") else [])
@@ -16511,16 +16490,14 @@ async def broadcast_catalog(
     if not catalog_products:
         raise HTTPException(status_code=400, detail="No valid products found")
 
-    # Get target customers based on filter
-    query = {"user_id": business_id}
-    if request.filter_type == "custom" and request.customer_ids:
-        query["_id"] = {"$in": request.customer_ids}
-    elif request.filter_type == "new":
-        query["tags"] = "New"
-    elif request.filter_type == "returning":
-        query["tags"] = "Returning"
-    elif request.filter_type == "vip":
-        query["tags"] = "VIP"
+    # Get target customers based on filter, using the one shared definition so
+    # a catalog send reaches the same people the owner saw counted.
+    from customer_audience import audience_query
+    query = audience_query(
+        business_id,
+        request.filter_type,
+        request.customer_ids if request.filter_type == "custom" else None,
+    )
 
     target_customers = await db.customers.find(query).to_list(None)
     if not target_customers:
