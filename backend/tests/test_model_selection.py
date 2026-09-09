@@ -134,3 +134,16 @@ def test_number_matching_survives_formatting_and_missing_values():
     assert _same_number("0110400963", "+254110400963")  # local vs international
     for a, b in ((None, None), ("", "+123"), ("+123", "")):
         assert not _same_number(a, b)
+
+
+def test_only_ai_written_sends_carry_the_model_weight():
+    # The weight exists because an AI reply on a paid model costs us more to
+    # produce. A message the owner typed costs the same whatever model is
+    # selected, so charging 12 for it was simply an overcharge.
+    from ai_service import AI_GENERATED_CONTEXTS, model_message_cost
+
+    assert AI_GENERATED_CONTEXTS == {"auto_reply", "fallback"}
+    for ctx in ("manual", "product_send", "broadcast", "order_confirm", "receipt"):
+        assert ctx not in AI_GENERATED_CONTEXTS, ctx
+    # and the weight itself is still real for the AI paths
+    assert model_message_cost("premium") > model_message_cost("standard")

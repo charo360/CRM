@@ -36,6 +36,13 @@ MODEL_MESSAGE_COST = {
 }
 
 
+# Sends the AI actually wrote, and therefore actually cost us an API call.
+# Everything else — a message the owner typed, a product card, a receipt, a
+# broadcast — costs one plan message whatever model is selected, because no
+# model was involved in producing it.
+AI_GENERATED_CONTEXTS = {"auto_reply", "fallback"}
+
+
 def model_message_cost(model_pref) -> int:
     """Plan messages consumed by one reply on the given picker choice."""
     return MODEL_MESSAGE_COST.get(normalise_model_choice(model_pref), 1)

@@ -523,7 +523,7 @@ class WhatsAppService:
             usage = ent.get("usage") or {}
             # The model the owner picked decides what one reply costs against
             # the plan; read here so send_message need not fetch the user again.
-            from ai_service import model_message_cost
+            from ai_service import AI_GENERATED_CONTEXTS, model_message_cost
             message_cost = model_message_cost(((user or {}).get("settings") or {}).get("ai_model"))
             # An owner can be reached on the linked WhatsApp or on the number
             # they signed up with, and alerts have gone to both. Treat either
@@ -614,6 +614,7 @@ class WhatsAppService:
                 logger.info(f"[send_message] auto-created customer {display_name} ({to_number})")
 
             # Store message in DB first (so we can back-fill evo_message_id from webhook)
+            from ai_service import AI_GENERATED_CONTEXTS
             message_id = str(uuid.uuid4())
             msg_doc = {
                 "_id": message_id,
@@ -628,11 +629,18 @@ class WhatsAppService:
                 # A scheduled push to the owner's own number is the app
                 # talking to its user, so it is free. Everything else is
                 # billed, the new-contact alert included.
+                # Free when it is a scheduled push to the owner. The model
+                # weight applies only when the AI wrote the message: a reply
+                # the owner typed costs the same on Claude as on the included
+                # model, because no model produced it.
                 "message_cost": 0 if (
                     send_context in UNBILLED_OWNER_CONTEXTS
                     and any(_same_number(to_number, n)
                             for n in limits.get("owner_numbers") or [])
-                ) else limits.get("message_cost", 1),
+                ) else (
+                    limits.get("message_cost", 1)
+                    if send_context in AI_GENERATED_CONTEXTS else 1
+                ),
             }
             if media_url:
                 msg_doc["image_url"] = media_url
