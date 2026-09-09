@@ -39,6 +39,33 @@ def _get_item_label(btype: str) -> str:
     return _ITEM_LABEL_MAP.get(btype, "products")
 
 
+# What a customer does with the thing, once they have seen it. Every product
+# sent from the app used to end "Reply *Yes* or *Order* to buy!", whatever the
+# business — so a salon asked customers to buy a haircut and a hotel asked
+# them to buy a room.
+_ACTION_VERB_MAP: dict = {
+    "salon": "book", "spa": "book", "services": "book", "repair": "book",
+    "cleaning": "book", "fitness": "book", "gym": "book", "events": "book",
+    "photography": "book", "healthcare": "book", "clinic": "book",
+    "beauty": "book", "tech": "book",
+    "rental": "reserve", "hotel": "reserve",
+    "restaurant": "order", "food": "order", "bakery": "order",
+    "grocery": "order", "retail": "order", "wholesale": "order",
+    "creator": "get", "general": "order",
+}
+
+
+def get_action_verb(btype: str) -> str:
+    """The verb for a call to action: order, book, reserve or get."""
+    return _ACTION_VERB_MAP.get((btype or "").lower(), "order")
+
+
+def product_call_to_action(btype: str) -> str:
+    """The line under a product or service the owner has just sent."""
+    verb = get_action_verb(btype)
+    return f"\U0001f449 Reply *Yes* to {verb}"
+
+
 def _get_categories_block(products: List[Dict], services: List[Dict]) -> str:
     """Build a CATALOG CATEGORIES line for the AI prompt."""
     all_items = products + services

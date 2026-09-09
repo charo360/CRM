@@ -16000,11 +16000,15 @@ async def send_product_to_customer(
     stock_label = "✅ In Stock" if product.get("in_stock", True) else "❌ Out of Stock"
     desc = f"\n_{product.get('description', '')}_" if product.get("description") else ""
     price = product.get('price') or 0
+    from autoreply.prompt_builder import product_call_to_action
+    _btype = ((user.get("business_knowledge") or {}).get("business_type")
+              or (user.get("settings") or {}).get("business_type")
+              or user.get("business_type") or "general")
     message_text = (
         f"*{product['name']}*\n"
         f"💰 {currency} {price:,.0f}\n"
         f"{stock_label}{desc}\n\n"
-        f"👉 Reply *Yes* or *Order* to buy!"
+        f"{product_call_to_action(_btype)}"
     )
     if storefront_url:
         message_text += f"\n\n🛍️ Browse the full catalog & pay online:\n{storefront_url}"
