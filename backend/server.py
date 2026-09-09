@@ -6261,7 +6261,10 @@ async def create_sale(sale: SaleCreate, background_tasks: BackgroundTasks, user 
                 f"✅ Payment received\nItem: {sale.item}\nAmount: {currency} {sale.amount:,.0f}\nThank you for shopping with us 🙏"
             ),
         }
-        queued = await enqueue_job(QUEUE_RECEIPT, receipt_job)
+        # Same rule as broadcasts: only hand off if a worker is really there.
+        # A receipt queued to nobody is a customer who paid and never got told.
+        from redis_client import worker_is_alive
+        queued = await worker_is_alive() and await enqueue_job(QUEUE_RECEIPT, receipt_job)
         if not queued:
             background_tasks.add_task(
                 send_receipt_message,
@@ -6418,9 +6421,11 @@ async def resend_receipt(sale_id: str, background_tasks: BackgroundTasks, user =
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
     
-    # Send receipt via WhatsApp — queue first, fall back to background_tasks
+    # Send receipt via WhatsApp — hand to the worker only if one is running,
+    # otherwise send in-process. A queue with no consumer loses the receipt.
     currency = user.get("currency", "USD")
-    queued = await enqueue_job(QUEUE_RECEIPT, {
+    from redis_client import worker_is_alive
+    queued = await worker_is_alive() and await enqueue_job(QUEUE_RECEIPT, {
         "type": "receipt",
         "user_id": business_id,
         "sale_id": sale_id,
