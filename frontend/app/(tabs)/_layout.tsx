@@ -29,6 +29,17 @@ export default function TabsLayout() {
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [notificationEnabled, setNotificationEnabled] = useState(false);
 
+  const needsBusinessSetup = user?.setup_complete === false
+    || (!user?.business_name?.trim() && (user?.role === 'owner' || !user?.role));
+
+  // An interrupted registration can otherwise reopen into the tabs because
+  // its SMS session is valid. Never let an owner use an empty business.
+  React.useEffect(() => {
+    if (needsBusinessSetup && user?.phone_number) {
+      router.replace({ pathname: '/(auth)/register', params: { phone: user.phone_number } });
+    }
+  }, [needsBusinessSetup, router, user?.phone_number]);
+
   // Fetch initial settings
   React.useEffect(() => {
     loadSettings();
@@ -68,7 +79,7 @@ export default function TabsLayout() {
   // Wait for business settings to load before mounting the tabs.
   // Mounting earlier hides Bookings/Broadcast because the default config
   // has them off until the real settings arrive.
-  if (isLoading) {
+  if (needsBusinessSetup || isLoading) {
     return <View style={styles.loadingContainer} />;
   }
 

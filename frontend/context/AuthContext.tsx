@@ -15,6 +15,7 @@ interface User {
   dashboard_access?: boolean;
   role?: string;
   team_members_count?: number;
+  setup_complete?: boolean;
 }
 
 interface AuthContextType {
@@ -187,8 +188,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await AsyncStorage.setItem(AUTH_TOKEN_KEY, newToken);
       apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
 
-      if (!is_new_user && userData) {
-        await storeUser(userData);
+      if (userData) {
+        // Keep the verified session even before the business profile is
+        // finished. The navigation guard will resume Setup Business after an
+        // app restart instead of treating this as a completed account.
+        await storeUser({ ...userData, setup_complete: !is_new_user });
       }
 
       // Cleared only once the session is actually established.
@@ -235,7 +239,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         apiClient.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
       }
       if (userData) {
-        await storeUser(userData);
+        await storeUser({ ...userData, setup_complete: true });
       }
 
       return { success: true };

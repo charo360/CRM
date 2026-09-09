@@ -4,18 +4,24 @@ import { useRouter } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
 
 export default function Index() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { user, isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
     if (!isLoading) {
       if (isAuthenticated) {
-        router.replace('/(tabs)/customers');
+        const needsBusinessSetup = user?.setup_complete === false
+          || (!user?.business_name?.trim() && (user?.role === 'owner' || !user?.role));
+        if (needsBusinessSetup && user?.phone_number) {
+          router.replace({ pathname: '/(auth)/register', params: { phone: user.phone_number } });
+        } else {
+          router.replace('/(tabs)/customers');
+        }
       } else {
         router.replace('/(auth)/login');
       }
     }
-  }, [isAuthenticated, isLoading]);
+  }, [user, isAuthenticated, isLoading, router]);
 
   return (
     <View style={styles.container}>

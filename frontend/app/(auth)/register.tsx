@@ -25,8 +25,9 @@ export default function RegisterScreen() {
   const [businessType, setBusinessType] = useState<BusinessType>('retail');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const { register } = useAuth();
+  const { register, user } = useAuth();
   const [linkCheck, setLinkCheck] = useState<{ slug: string; available: boolean; reason: string } | null>(null);
+  const registeredPhone = phone || user?.phone_number || '';
 
   // The business name becomes the public shop link, so say up front when
   // another shop already holds it — the name still works, but the link would
@@ -58,10 +59,15 @@ export default function RegisterScreen() {
       Alert.alert('Error', 'Please enter your business name');
       return;
     }
+    if (!registeredPhone) {
+      Alert.alert('Sign-in required', 'Please sign in again to finish setting up your business.');
+      router.replace('/(auth)/login');
+      return;
+    }
 
     setLoading(true);
     try {
-      const result = await register(phone!, businessName, ownerName);
+      const result = await register(registeredPhone, businessName, ownerName);
       if (result.success) {
         // The type decides the labels, the tabs and what the public shop does,
         // so set it before the app first renders rather than leaving every
@@ -145,7 +151,7 @@ export default function RegisterScreen() {
 
             <View style={styles.phoneDisplay}>
               <Text style={styles.phoneLabel}>Phone Number</Text>
-              <Text style={styles.phoneValue}>{phone}</Text>
+              <Text style={styles.phoneValue}>{registeredPhone}</Text>
             </View>
 
             <TouchableOpacity
