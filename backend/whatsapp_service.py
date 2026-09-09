@@ -504,6 +504,10 @@ class WhatsAppService:
                 "created_at": {"$gte": today},
             })
             usage = ent.get("usage") or {}
+            # The model the owner picked decides what one reply costs against
+            # the plan; read here so send_message need not fetch the user again.
+            from ai_service import model_message_cost
+            message_cost = model_message_cost(((user or {}).get("settings") or {}).get("ai_model"))
             monthly_sent = usage.get("outbound_messages_month", 0)
             monthly_cap = usage.get("outbound_messages_cap", 0)
             monthly_remaining = usage.get("outbound_messages_remaining", 0)
@@ -518,10 +522,12 @@ class WhatsAppService:
                 "monthly_remaining": monthly_remaining,
                 "plan": plan,
                 "dashboard_access": ent.get("dashboard_access"),
+                "message_cost": message_cost,
             }
         except Exception as e:
             logger.warning(f"[check_message_limit] {user_id}: {e}")
-            return {"sent": 0, "limit": 50, "remaining": 50, "daily_sent": 0, "daily_limit": 50, "plan": "free"}
+            return {"sent": 0, "limit": 50, "remaining": 50, "daily_sent": 0,
+                    "daily_limit": 50, "plan": "free", "message_cost": 1}
 
     async def send_message(
         self,
@@ -547,7 +553,7 @@ class WhatsAppService:
                     "status": "limit_reached",
                     "message": "Subscribe or start a free trial to send WhatsApp messages.",
                 }
-            if limits.get("monthly_remaining", 0) <= 0 and limits.get("monthly_limit", 0) > 0:
+            if limits.get("monthly_remaining", 0) < limits.get("message_cost", 1)                     and limits.get("monthly_limit", 0) > 0:
                 return {
                     "status": "limit_reached",
                     "message": f"Monthly limit of {limits['monthly_limit']:,} messages reached. Upgrade your plan.",
@@ -595,6 +601,7 @@ class WhatsAppService:
                 "from_number": to_number,
                 "created_at": datetime.utcnow(),
                 "send_context": send_context,
+                "message_cost": limits.get("message_cost", 1),
             }
             if media_url:
                 msg_doc["image_url"] = media_url

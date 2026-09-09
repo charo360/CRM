@@ -24,12 +24,21 @@ async def get_monthly_message_count(db, user_id: str) -> int:
     """
     start = get_start_of_month()
 
-    # Count WhatsApp messages (direction="outgoing")
-    wa_count = await db.messages.count_documents({
-        "user_id": user_id,
-        "direction": "outgoing",
-        "created_at": {"$gte": start}
-    })
+    # Count WhatsApp messages (direction="outgoing"). A reply on a paid model
+    # is worth several plan messages, so sum the stored weight rather than the
+    # documents; sends from before weighting carry none and count as one.
+    wa_count = 0
+    async for row in db.messages.aggregate([
+        {"$match": {"user_id": user_id, "direction": "outgoing",
+                    # A send the provider rejected must not be charged for.
+                    # count_monthly_outbound has always excluded these; this
+                    # counter did not, so the same month billed differently
+                    # depending on which one was asked.
+                    "delivery_status": {"$ne": "failed"},
+                    "created_at": {"$gte": start}}},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$message_cost", 1]}}}},
+    ]):
+        wa_count = int(row.get("total") or 0)
 
     # Count Outgoing emails (is_outgoing=True)
     # Support both datetime and ISO string fallback checks

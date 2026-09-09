@@ -21,6 +21,26 @@ MODEL_CHOICES = {
     'deepseek': ('deepseek', 'deepseek-v4-flash'),
 }
 
+# How many of the plan's messages one reply costs. Set from the API price of
+# a measured reply (about 3,450 tokens in, 80 out) relative to the included
+# model, so an allowance drains at the rate the replies actually cost us:
+#   luna       $0.20/$1.20 per Mtok  -> $0.00079  -> 1
+#   deepseek   $0.44/$1.32 at peak   -> $0.00162  -> 2
+#   claude 5   $2.00/$10.00          -> $0.00770  -> 10
+#   gpt-4o     $2.50/$10.00          -> $0.00943  -> 12
+MODEL_MESSAGE_COST = {
+    'standard': 1,
+    'deepseek': 2,
+    'claude': 10,
+    'premium': 12,
+}
+
+
+def model_message_cost(model_pref) -> int:
+    """Plan messages consumed by one reply on the given picker choice."""
+    return MODEL_MESSAGE_COST.get(normalise_model_choice(model_pref), 1)
+
+
 # Everything except the default costs several times more per reply, so the
 # picker is gated on a paid plan; see update_settings in server.py.
 FREE_MODEL_CHOICES = {'standard'}

@@ -73,3 +73,32 @@ def test_case_and_padding_do_not_slip_past_the_gate():
     # treated as free and then billed as paid.
     for value in ("PREMIUM", "  Claude  ", "DeepSeek"):
         assert normalise_model_choice(value) not in FREE_MODEL_CHOICES
+
+
+def test_a_paid_model_costs_more_plan_messages_than_the_included_one():
+    from ai_service import model_message_cost
+
+    included = model_message_cost("standard")
+    assert included == 1
+    for choice in ("deepseek", "claude", "premium"):
+        assert model_message_cost(choice) > included, choice
+
+
+def test_message_cost_tracks_the_api_price_order():
+    # deepseek is nearest the included model, gpt-4o the dearest, so the
+    # allowance must drain in that order too.
+    from ai_service import model_message_cost
+
+    assert (
+        model_message_cost("standard")
+        < model_message_cost("deepseek")
+        < model_message_cost("claude")
+        < model_message_cost("premium")
+    )
+
+
+def test_unknown_or_dropped_choices_cost_one_message():
+    from ai_service import model_message_cost
+
+    for value in (None, "", "grok", "grok-4.6", "nonsense"):
+        assert model_message_cost(value) == 1

@@ -133,17 +133,25 @@ def has_dashboard_access(record: dict, now: Optional[datetime] = None) -> bool:
 async def count_monthly_outbound(db, business_id: str, now: Optional[datetime] = None) -> int:
     now = now or datetime.utcnow()
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    return await db.messages.count_documents(
-        {
-            "user_id": business_id,
-            "direction": "outgoing",
-            # A provider-rejected send must not consume a plan message or a
-            # purchased extra message. Older accepted messages do not have a
-            # delivery_status field, so $ne keeps those counted.
-            "delivery_status": {"$ne": "failed"},
-            "created_at": {"$gte": month_start},
-        }
-    )
+    match = {
+        "user_id": business_id,
+        "direction": "outgoing",
+        # A provider-rejected send must not consume a plan message or a
+        # purchased extra message. Older accepted messages do not have a
+        # delivery_status field, so $ne keeps those counted.
+        "delivery_status": {"$ne": "failed"},
+        "created_at": {"$gte": month_start},
+    }
+    # A reply on a paid model costs several plan messages, so the allowance
+    # is the sum of what each send was worth, not the number of sends.
+    # Messages stored before this carry no weight and count as one.
+    cursor = db.messages.aggregate([
+        {"$match": match},
+        {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$message_cost", 1]}}}},
+    ])
+    async for row in cursor:
+        return int(row.get("total") or 0)
+    return 0
 
 
 def extra_message_balance(record: dict) -> int:
