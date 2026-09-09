@@ -60,6 +60,24 @@ class TemplateCreate(BaseModel):
     body_html: str
 
 
+class ImageGenRequest(BaseModel):
+    """Body for POST /email-marketing/generate-image.
+
+    Defined at module level like every other model here. Nested inside the
+    router function it was invisible to FastAPI, which resolves annotations
+    against module globals — and with `from __future__ import annotations`
+    every annotation is a string, so it became an unresolvable ForwardRef.
+    FastAPI then treated the model as a query parameter, and building the
+    OpenAPI schema raised, taking /openapi.json down for the whole API.
+    """
+    prompt: str
+    image_type: str = "hero"            # hero | product
+    existing_image_url: str = ""        # if set → enhance rather than generate
+    logo_url: str = ""
+    accent_color: str = ""
+    quality: str = "fast"               # fast | pro
+
+
 class SendRequest(BaseModel):
     test_email: Optional[str] = None   # if set → single test send, else full send
 
@@ -447,14 +465,6 @@ def make_email_marketing_router(get_current_user, db):
         return {"images": images[:limit]}
 
     # ── AI Image Generation via OpenRouter ────────────────────────────────────
-
-    class ImageGenRequest(BaseModel):
-        prompt: str
-        image_type: str = "hero"            # hero | product
-        existing_image_url: str = ""        # if set → enhance rather than generate
-        logo_url: str = ""
-        accent_color: str = ""
-        quality: str = "fast"               # fast | pro
 
     @router.post("/generate-image")
     async def generate_email_image(body: ImageGenRequest, user=Depends(get_current_user)):
