@@ -40,7 +40,10 @@ MODEL_MESSAGE_COST = {
 # Everything else — a message the owner typed, a product card, a receipt, a
 # broadcast — costs one plan message whatever model is selected, because no
 # model was involved in producing it.
-AI_GENERATED_CONTEXTS = {"auto_reply", "fallback"}
+# "ai_draft" is a Write-with-AI or follow-up draft the owner reviewed and
+# sent. Drafting and regenerating stay free; the charge lands only on what
+# actually reaches a customer.
+AI_GENERATED_CONTEXTS = {"auto_reply", "fallback", "ai_draft"}
 
 
 def model_message_cost(model_pref) -> int:

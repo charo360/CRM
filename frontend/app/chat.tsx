@@ -98,6 +98,10 @@ export default function ChatScreen() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [autoReplyEnabled, setAutoReplyEnabled] = useState(false);
   const [showReplyMode, setShowReplyMode] = useState(false);
+  // Whether the text sitting in the box was produced by the AI. Drafting and
+  // regenerating are free; a draft that is actually sent is charged at the
+  // model's rate, because producing it cost a call on that model.
+  const [aiDrafted, setAiDrafted] = useState(false);
   // Which of the three the chip is showing. "Suggestions" is an action rather
   // than a saved setting, so it reverts to "My reply" once a draft is in the box.
   const replyMode: ReplyMode = autoReplyEnabled ? 'agent' : (drafting ? 'suggestions' : 'mine');
@@ -295,7 +299,10 @@ export default function ChatScreen() {
         mode: isPersonal ? 'personal' : 'auto',
       });
       const msg = res.data.message || res.data.drafted_message || '';
-      if (msg) setInputText(msg);
+      if (msg) {
+        setInputText(msg);
+        setAiDrafted(true);
+      }
     } catch (error) {
       Alert.alert('Error', 'Failed to generate AI draft');
     } finally {
@@ -509,7 +516,8 @@ export default function ChatScreen() {
     setMessages(prev => [optimisticMsg, ...prev]);
 
     try {
-      const result = await whatsappAPI.sendMessage(sendTarget, text, customerName);
+      const result = await whatsappAPI.sendMessage(sendTarget, text, customerName, aiDrafted);
+      setAiDrafted(false);
 
       // Replace optimistic message with real one
       setMessages(prev =>
@@ -914,7 +922,13 @@ export default function ChatScreen() {
             <TextInput
               style={styles.pillInput}
               value={inputText}
-              onChangeText={(text) => { setInputText(text); if (text.length > 0) setShowAttachMenu(false); }}
+              onChangeText={(text) => {
+                setInputText(text);
+                // Editing a draft keeps it a draft — it still cost a call.
+                // Emptying the box does not.
+                if (!text.trim()) setAiDrafted(false);
+                if (text.length > 0) setShowAttachMenu(false);
+              }}
               placeholder="Message"
               placeholderTextColor="#8B9DC3"
               multiline

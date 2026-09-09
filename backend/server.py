@@ -10762,7 +10762,7 @@ async def send_whatsapp_media(
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/messages/send")
-async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, user = Depends(get_current_user)):
+async def send_whatsapp_message(to_number: str, message: str, customer_name: Optional[str] = None, ai_drafted: bool = False, user = Depends(get_current_user)):
     """
     Send WhatsApp message to a customer via WAHA.
     Auto-creates contact if number doesn't exist. Enforces rate limits.
@@ -10824,7 +10824,11 @@ async def send_whatsapp_message(to_number: str, message: str, customer_name: Opt
             user_id=business_id,  # Use business_id for WhatsApp instance
             to_number=to_number,
             message=message,
-            customer_name=customer_name
+            customer_name=customer_name,
+            # Drafting and regenerating are free; a draft that actually
+            # reaches a customer is charged at the model's rate, because
+            # producing it cost a call on that model.
+            send_context="ai_draft" if ai_drafted else "manual",
         )
         if result.get("status") == "limit_reached":
             raise HTTPException(status_code=429, detail=result.get("message"))

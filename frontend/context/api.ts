@@ -249,9 +249,9 @@ export const whatsappAPI = {
   /**
    * Send a WhatsApp message to a customer
    */
-  sendMessage: async (toNumber: string, message: string, customerName?: string) => {
+  sendMessage: async (toNumber: string, message: string, customerName?: string, aiDrafted?: boolean) => {
     const response = await apiClient.post('/messages/send', null, {
-      params: { to_number: toNumber, message, customer_name: customerName },
+      params: { to_number: toNumber, message, customer_name: customerName, ai_drafted: aiDrafted },
     });
     return response.data;
   },

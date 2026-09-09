@@ -142,8 +142,19 @@ def test_only_ai_written_sends_carry_the_model_weight():
     # selected, so charging 12 for it was simply an overcharge.
     from ai_service import AI_GENERATED_CONTEXTS, model_message_cost
 
-    assert AI_GENERATED_CONTEXTS == {"auto_reply", "fallback"}
+    assert AI_GENERATED_CONTEXTS == {"auto_reply", "fallback", "ai_draft"}
     for ctx in ("manual", "product_send", "broadcast", "order_confirm", "receipt"):
         assert ctx not in AI_GENERATED_CONTEXTS, ctx
     # and the weight itself is still real for the AI paths
     assert model_message_cost("premium") > model_message_cost("standard")
+
+
+def test_a_sent_ai_draft_is_charged_at_the_model_rate():
+    # Write with AI and follow-ups make a real call on the selected model.
+    # Regenerating stays free; the charge lands on what reaches a customer.
+    from ai_service import AI_GENERATED_CONTEXTS, model_message_cost
+
+    assert "ai_draft" in AI_GENERATED_CONTEXTS
+    assert model_message_cost("claude") == 10
+    # and a message the owner typed is still one, whatever model is picked
+    assert "manual" not in AI_GENERATED_CONTEXTS
