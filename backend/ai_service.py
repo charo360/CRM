@@ -18,7 +18,6 @@ MODEL_CHOICES = {
     'standard': ('openai', 'gpt-5.6-luna'),
     'premium':  ('openai', 'gpt-4o'),
     'claude':   ('claude', 'claude-sonnet-5'),
-    'grok':     ('grok', 'grok-4.6'),
     'deepseek': ('deepseek', 'deepseek-v4-flash'),
 }
 
@@ -26,9 +25,13 @@ MODEL_CHOICES = {
 # picker is gated on a paid plan; see update_settings in server.py.
 FREE_MODEL_CHOICES = {'standard'}
 
-# Settings saved before the picker was rebuilt.
+# Settings saved before the picker was rebuilt. Grok was dropped because
+# grok-4.6 spends ~2,500 reasoning tokens before answering, so a customer
+# waited 40-49s for a greeting; it also lost all 48 blind naturalness
+# comparisons, including against judging by Grok's own model.
 _LEGACY_MODEL_CHOICES = {
     'gpt-5': 'standard', 'gpt-4o-mini': 'standard', 'mini': 'standard',
+    'grok': 'standard', 'grok-4.6': 'standard', 'grok-4': 'standard',
     'sonnet-4.5': 'claude', 'claude-4.7': 'claude', 'claude-3.5': 'claude',
     'gpt-4': 'premium', 'gpt-4o': 'premium',
 }

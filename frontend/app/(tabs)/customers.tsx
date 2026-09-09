@@ -253,10 +253,10 @@ export default function CustomersScreen() {
       case 'standard': return 'GPT-5.6 Luna';
       case 'premium': return 'GPT-4o';
       case 'claude': return 'Claude Sonnet 5';
-      case 'grok': return 'Grok 4.6';
       case 'deepseek': return 'DeepSeek V4';
       // Saved before the picker was rebuilt.
-      case 'gpt-5': return 'GPT-5.6 Luna';
+      case 'gpt-5':
+      case 'grok': return 'GPT-5.6 Luna';
       case 'claude-4.7':
       case 'claude-3.5':
       case 'sonnet-4.5': return 'Claude Sonnet 5';
@@ -2435,7 +2435,6 @@ export default function CustomersScreen() {
               { id: 'standard', name: 'GPT-5.6 Luna', note: 'Included' },
               { id: 'premium', name: 'GPT-4o', note: 'Paid plan' },
               { id: 'claude', name: 'Claude Sonnet 5', note: 'Paid plan' },
-              { id: 'grok', name: 'Grok 4.6', note: 'Paid plan' },
               { id: 'deepseek', name: 'DeepSeek V4', note: 'Paid plan' },
             ].map((model) => (
               <TouchableOpacity

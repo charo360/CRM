@@ -29,7 +29,6 @@ def test_only_the_default_is_free():
     assert set(MODEL_CHOICES) - FREE_MODEL_CHOICES == {
         "premium",
         "claude",
-        "grok",
         "deepseek",
     }
 
@@ -40,6 +39,14 @@ def test_the_claude_choice_reaches_claude():
     client_type, model_name = MODEL_CHOICES["claude"]
     assert client_type == "claude"
     assert model_name.startswith("claude-")
+
+
+def test_grok_settings_fall_back_to_the_free_model():
+    # grok-4.6 spent ~2,500 reasoning tokens per reply, so a customer waited
+    # 40-49s for a greeting. Accounts that had picked it must not be stranded
+    # on a choice that no longer exists.
+    for value in ("grok", "grok-4.6", "grok-4"):
+        assert normalise_model_choice(value) in FREE_MODEL_CHOICES
 
 
 def test_settings_saved_before_the_rebuild_still_resolve():
