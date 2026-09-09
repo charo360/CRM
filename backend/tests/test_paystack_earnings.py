@@ -162,3 +162,71 @@ async def test_settlement_failure_is_reported_as_unknown_not_zero(monkeypatch):
 
     monkeypatch.setattr(paystack_client, "PaystackClient", Boom)
     assert await pe._settled({"_id": "u1", "paystack_secret_key": "sk_x"}) is None
+
+
+@pytest.mark.asyncio
+async def test_only_successful_settlements_count_as_paid_out(monkeypatch):
+    # Paystack's statuses are success, processing, pending and failed. Only
+    # success has reached the business; the rest are still in flight and
+    # belong in "still held", not in "paid out to you".
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def list_settlements(self, **k):
+            return [
+                {"status": "success", "currency": "KES", "total_amount": 500000,
+                 "effective_amount": 492500, "total_fees": 7500},
+                {"status": "processing", "currency": "KES", "total_amount": 300000,
+                 "effective_amount": 295000},
+                {"status": "pending", "currency": "KES", "total_amount": 100000,
+                 "effective_amount": 98000},
+                {"status": "failed", "currency": "KES", "total_amount": 50000,
+                 "effective_amount": 0},
+            ]
+
+    import paystack_client
+    import paystack_auth
+
+    monkeypatch.setattr(paystack_client, "PaystackClient", Client)
+    monkeypatch.setattr(paystack_auth, "secret_key_from_doc", lambda u: "sk_x")
+
+    # 492,500 subunits = KES 4,925 — net of fees, not the KES 5,000 gross.
+    assert await pe._settled({"_id": "u1"}) == {"KES": 4925.0}
+
+
+@pytest.mark.asyncio
+async def test_the_amount_shown_is_what_lands_not_the_gross(monkeypatch):
+    # total_amount is before total_fees. Showing the gross would tell a
+    # business it had been paid more than its bank will ever show.
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def list_settlements(self, **k):
+            return [{"status": "success", "currency": "KES",
+                     "total_amount": 100000, "effective_amount": 97000}]
+
+    import paystack_client
+    import paystack_auth
+
+    monkeypatch.setattr(paystack_client, "PaystackClient", Client)
+    monkeypatch.setattr(paystack_auth, "secret_key_from_doc", lambda u: "sk_x")
+    assert await pe._settled({"_id": "u1"}) == {"KES": 970.0}
+
+
+@pytest.mark.asyncio
+async def test_a_settlement_without_effective_amount_falls_back_to_total(monkeypatch):
+    class Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def list_settlements(self, **k):
+            return [{"status": "success", "currency": "KES", "total_amount": 250000}]
+
+    import paystack_client
+    import paystack_auth
+
+    monkeypatch.setattr(paystack_client, "PaystackClient", Client)
+    monkeypatch.setattr(paystack_auth, "secret_key_from_doc", lambda u: "sk_x")
+    assert await pe._settled({"_id": "u1"}) == {"KES": 2500.0}

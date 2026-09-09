@@ -55,7 +55,7 @@ async def _settled(user: Dict[str, Any]) -> Optional[Dict[str, float]]:
     """
     subaccount = (user or {}).get("paystack_subaccount_code") or ""
     try:
-        from paystack_credentials import secret_key_from_doc
+        from paystack_auth import secret_key_from_doc
         from paystack_client import PaystackClient
 
         secret = secret_key_from_doc(user)
@@ -68,11 +68,20 @@ async def _settled(user: Dict[str, Any]) -> Optional[Dict[str, float]]:
 
     out: Dict[str, float] = {}
     for row in rows:
-        if str(row.get("status") or "").lower() not in ("success", "processed", "settled"):
+        # Paystack settlement statuses are success, processing, pending and
+        # failed. Only success has actually reached the business; the rest
+        # are still in flight and belong in "still held".
+        if str(row.get("status") or "").lower() != "success":
             continue
         currency = row.get("currency") or ""
-        # Paystack reports settlement amounts in subunits.
-        out[currency] = out.get(currency, 0.0) + _major(row.get("total_amount")) / 100.0
+        # effective_amount is what lands in the account — total_amount before
+        # total_fees is deducted. Showing the gross would tell a business it
+        # had been paid more than its bank will ever show.
+        amount = row.get("effective_amount")
+        if amount is None:
+            amount = row.get("total_amount")
+        # Paystack reports money in subunits.
+        out[currency] = out.get(currency, 0.0) + _major(amount) / 100.0
     return out
 
 
