@@ -1805,8 +1805,13 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
 
     # Send messages in background (only if not scheduled)
     if not broadcast.scheduled_at:
-        # Try Redis queue first (worker process handles it); fall back to in-process task
-        queued = await enqueue_job(QUEUE_BROADCAST, {
+        # Hand off to the worker only if a worker is actually running. Redis
+        # being reachable says nothing about whether anything consumes the
+        # queue, and this deployment defines no worker service -- a queued
+        # broadcast then sits in Redis forever with its record stuck on
+        # "pending", no error raised and nothing for the owner to see.
+        from redis_client import worker_is_alive
+        queued = await worker_is_alive() and await enqueue_job(QUEUE_BROADCAST, {
             "type": "broadcast",
             "broadcast_id": broadcast_id,
             "user_id": business_id,
@@ -1854,6 +1859,15 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
         return f"{server_url}{url}" if server_url else url
 
     resolved_images = [_full_url(u) for u in image_urls if u]
+
+    # "pending" now means the send never started. Until this was set, a job
+    # that was queued and never picked up was indistinguishable from one that
+    # was mid-flight, and the app renders every non-completed status as
+    # "Sending...", so it simply span forever.
+    await db.broadcasts.update_one(
+        {"_id": broadcast_id, "status": "pending"},
+        {"$set": {"status": "sending", "started_at": datetime.utcnow()}},
+    )
 
     sent_count = 0
     for customer in customers:
@@ -1915,9 +1929,20 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
             {"$set": {"sent_count": sent_count}},
         )
     else:
+        # A broadcast where every single send failed is not "Sent". Sends fail
+        # per recipient and the loop swallows each one, so without this an
+        # owner whose WhatsApp is disconnected sees "Sent" and 0 delivered.
+        final_status = "completed"
+        if customers and sent_count == 0:
+            final_status = "failed"
         await db.broadcasts.update_one(
             {"_id": broadcast_id},
-            {"$set": {"sent_count": sent_count, "status": "completed"}},
+            {"$set": {
+                "sent_count": sent_count,
+                "failed_count": max(0, len(customers) - sent_count),
+                "status": final_status,
+                "finished_at": datetime.utcnow(),
+            }},
         )
 
 @api_router.post("/broadcasts/{broadcast_id}/cancel")
@@ -2023,7 +2048,8 @@ async def resend_broadcast(broadcast_id: str, background_tasks: BackgroundTasks,
         "created_at": datetime.utcnow()
     }
     await db.broadcasts.insert_one(new_doc)
-    queued = await enqueue_job(QUEUE_BROADCAST, {
+    from redis_client import worker_is_alive
+    queued = await worker_is_alive() and await enqueue_job(QUEUE_BROADCAST, {
         "type": "broadcast",
         "broadcast_id": new_id,
         "user_id": business_id,

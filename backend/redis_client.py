@@ -111,6 +111,43 @@ async def cache_delete_pattern(pattern: str) -> None:
 
 # ── Queue helpers (Redis Lists — simple FIFO) ─────────────────────────────────
 
+# How long a worker's heartbeat stays valid. The worker refreshes it once per
+# loop; blpop waits at most 30s, so 120s leaves room for a slow job without
+# declaring a live worker dead.
+WORKER_HEARTBEAT_KEY = "worker:alive"
+WORKER_HEARTBEAT_TTL = 120
+
+
+async def worker_heartbeat() -> None:
+    """Announce that a queue consumer is running. Called by worker.py."""
+    r = await get_redis()
+    if not r:
+        return
+    try:
+        await r.setex(_k(WORKER_HEARTBEAT_KEY), WORKER_HEARTBEAT_TTL, "1")
+    except Exception as e:
+        logging.warning(f"[Queue] worker_heartbeat error: {e}")
+
+
+async def worker_is_alive() -> bool:
+    """Is anything actually consuming the queues right now?
+
+    Without this the server enqueues optimistically. Redis being reachable
+    says nothing about whether a consumer exists, and this deployment defines
+    no worker service at all -- so a queued broadcast sat in Redis forever,
+    the record stuck on "pending", with no error and no way for the owner to
+    tell. Falling back to sending in-process is slower but it happens.
+    """
+    r = await get_redis()
+    if not r:
+        return False
+    try:
+        return bool(await r.exists(_k(WORKER_HEARTBEAT_KEY)))
+    except Exception as e:
+        logging.warning(f"[Queue] worker_is_alive error: {e}")
+        return False
+
+
 async def enqueue_job(queue: str, payload: dict) -> bool:
     """Push a job onto a Redis queue. Returns True if queued, False if Redis unavailable."""
     r = await get_redis()

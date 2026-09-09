@@ -26,6 +26,7 @@ from redis_client import (
     dequeue_job,
     dequeue_job_multi,
     QUEUE_BROADCAST,
+    worker_heartbeat,
     QUEUE_RECEIPT,
     QUEUE_AI_REPLY,
     get_redis,
@@ -213,6 +214,9 @@ async def main():
 
     while _running:
         try:
+            # Tell the server a consumer is here. Without it the server has no
+            # way to know, and would queue jobs nobody would ever pick up.
+            await worker_heartbeat()
             # Single blpop watches all queues at once — 1 Redis command per 30s idle
             # instead of 3 commands per 6s (15× fewer commands, well under Upstash free tier)
             result = await dequeue_job_multi(QUEUES, timeout=30)

@@ -242,6 +242,23 @@ export default function BroadcastScreen() {
     fetchData();
   };
 
+  // Every status needs a label. This used to be `completed ? 'Sent' : 'Sending...'`,
+  // so a broadcast that failed, was stopped, or was queued and never picked up
+  // span on "Sending..." forever with nothing to explain it.
+  const statusLabel = (status?: string) => {
+    switch (status) {
+      case 'completed': return 'Sent';
+      case 'failed': return 'Failed';
+      case 'cancelled': return 'Stopped';
+      case 'scheduled': return 'Scheduled';
+      case 'pending': return 'Queued';
+      default: return 'Sending...';
+    }
+  };
+
+  const isFinished = (status?: string) =>
+    status === 'completed' || status === 'failed' || status === 'cancelled';
+
   const getFilteredCount = () => {
     if (selectedFilter === 'all') return customers.length;
     if (selectedFilter === 'new') {
@@ -728,7 +745,7 @@ export default function BroadcastScreen() {
         const res = await apiClient.get('/broadcasts');
         setBroadcasts(res.data);
         const updated = res.data.find((b: Broadcast) => b.id === broadcastId);
-        if (updated?.status === 'completed' || pollAttemptsRef.current >= 5) {
+        if (isFinished(updated?.status) || pollAttemptsRef.current >= 5) {
           clearInterval(pollIntervalRef.current!);
           pollIntervalRef.current = null;
         }
@@ -946,8 +963,8 @@ export default function BroadcastScreen() {
                     )}
                   </View>
                   <View style={styles.statusRow}>
-                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, item.status === 'sending' && styles.statusSending]}>
-                      <Text style={styles.statusText}>{item.status === 'completed' ? 'Sent' : 'Sending...'}</Text>
+                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, item.status === 'sending' && styles.statusSending, (item.status === 'failed' || item.status === 'cancelled') && styles.statusFailed]}>
+                      <Text style={styles.statusText}>{statusLabel(item.status)}</Text>
                     </View>
                     <Text style={styles.recipientCount}>{item.sent_count}/{item.recipients_count} delivered</Text>
                   </View>
@@ -1415,9 +1432,10 @@ export default function BroadcastScreen() {
                   { alignSelf: 'flex-start' },
                   viewingBroadcast.status === 'completed' && styles.statusCompleted,
                   viewingBroadcast.status === 'sending' && styles.statusSending,
+                  (viewingBroadcast.status === 'failed' || viewingBroadcast.status === 'cancelled') && styles.statusFailed,
                   ]}>
                     <Text style={styles.statusText}>
-                      {viewingBroadcast.status === 'completed' ? 'Sent' : 'Sending...'}
+                      {statusLabel(viewingBroadcast.status)}
                     </Text>
                   </View>
 
@@ -1815,7 +1833,7 @@ export default function BroadcastScreen() {
                 <View style={styles.formGroup}>
                   <Text style={styles.formLabel}>Select Broadcast to Follow Up</Text>
                   <ScrollView style={{ maxHeight: 160, backgroundColor: '#1A2942', borderRadius: 8, padding: 4 }}>
-                    {broadcasts.filter(b => b.status === 'completed').map(b => (
+                    {broadcasts.filter(b => isFinished(b.status)).map(b => (
                       <TouchableOpacity
                         key={b.id}
                         style={{ flexDirection: 'row', alignItems: 'center', padding: 10, backgroundColor: selectedBroadcastForFollowUp === b.id ? '#1E3A5F' : 'transparent', borderRadius: 8, marginBottom: 4, borderWidth: selectedBroadcastForFollowUp === b.id ? 1 : 0, borderColor: '#25D366' }}
@@ -1831,7 +1849,7 @@ export default function BroadcastScreen() {
                         <Text style={{ color: '#666', fontSize: 11, marginLeft: 6 }}>{new Date(b.created_at).toLocaleDateString()}</Text>
                       </TouchableOpacity>
                     ))}
-                    {broadcasts.filter(b => b.status === 'completed').length === 0 && (
+                    {broadcasts.filter(b => isFinished(b.status)).length === 0 && (
                       <Text style={{ color: '#666', padding: 10, textAlign: 'center' }}>No completed broadcasts yet</Text>
                     )}
                   </ScrollView>
@@ -2019,6 +2037,7 @@ const styles = StyleSheet.create({
   broadcastDate: { color: '#FFF', fontWeight: '600', marginBottom: 4 },
   statusRow: { flexDirection: 'row', alignItems: 'center' },
   statusBadge: { backgroundColor: '#2563EB', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginRight: 8 },
+  statusFailed: { backgroundColor: '#FF4A4A22' },
   statusCompleted: { backgroundColor: '#25D366' },
   statusSending: { backgroundColor: '#F59E0B' },
   statusText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
