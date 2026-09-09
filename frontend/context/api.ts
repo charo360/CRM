@@ -841,21 +841,43 @@ export const feedbackAPI = {
 // ============ Loyalty API Methods ============
 
 export const loyaltyAPI = {
+  /**
+   * These three called /loyalty/{id}, /loyalty/{id}/add and
+   * /loyalty/{id}/history — none of which the backend registers. The real
+   * routes are /loyalty/members/{id} and /loyalty/transactions, so opening
+   * any customer profile popped "Could not load loyalty".
+   */
   getPoints: async (customerId: string) => {
-    const response = await apiClient.get(`/loyalty/${customerId}`);
-    return response.data;
+    try {
+      const response = await apiClient.get(`/loyalty/members/${customerId}`);
+      return response.data;
+    } catch (error: any) {
+      // A customer who has never earned a point is not a member yet, which
+      // the API reports as 404. That is a zero balance, not a failure.
+      if (error?.response?.status === 404) return { points: 0, tier: null };
+      throw error;
+    }
   },
 
   addPoints: async (customerId: string, amount: number, reason?: string) => {
-    const response = await apiClient.post(`/loyalty/${customerId}/add`, {
+    const response = await apiClient.post('/loyalty/transactions', {
+      customer_id: customerId,
+      type: 'earn',
       points: amount,
-      reason,
+      reason: reason || '',
     });
     return response.data;
   },
 
   getHistory: async (customerId: string) => {
-    const response = await apiClient.get(`/loyalty/${customerId}/history`);
-    return response.data;
+    try {
+      const response = await apiClient.get(
+        `/loyalty/transactions?customer_id=${encodeURIComponent(customerId)}`,
+      );
+      return response.data;
+    } catch (error: any) {
+      if (error?.response?.status === 404) return [];
+      throw error;
+    }
   },
 };

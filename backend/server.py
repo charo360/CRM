@@ -13281,7 +13281,7 @@ Message:"""
         user_settings    = user.get("settings", {})
         model_pref       = user_settings.get("ai_model", "standard")
         business_name    = bc.get("name") or user.get("business_name", "this business")
-        btype            = bc.get("type", "retail")
+        btype            = bc.get("type", "general")
         currency         = bc.get("currency", "KES")
         custom_direction = request.custom_instructions or ""
         regenerate_count = request.regenerate_count or 0

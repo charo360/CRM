@@ -312,7 +312,11 @@ FLOW TRACKING (rental):
 # Business type groupings for response format selection
 _RF_ORDER_TYPES      = {"retail", "wholesale", "food", "bakery", "grocery", "creator"}
 _RF_BOOKING_TYPES    = {"salon", "beauty", "spa", "services", "repair", "cleaning",
-                        "fitness", "gym", "events", "photography", "healthcare", "clinic", "support"}
+                        "fitness", "gym", "events", "photography", "healthcare", "clinic"}
+# "support" is deliberately absent. context_loader never loads services for it,
+# so offering create_booking asked the model to book something it could not see
+# — it would have had to invent the service. This matches the block choice
+# below, which already gives support no order or booking instructions.
 _RF_RESTAURANT_TYPES = {"restaurant"}
 _RF_RENTAL_TYPES     = {"rental", "hotel"}
 # general gets everything
@@ -368,6 +372,10 @@ _RF_ACTIONS_COMMON = """\
   {"type": "share_storefront"}
   {"type": "clear_flow"}"""
 
+_RF_FLOW_NONE = """\
+flow_update: always null. This business type does not take orders or bookings,
+so there is no checkout to keep track of."""
+
 _RF_FLOW_ORDER = """\
 flow_update (include only changed fields):
   {"active_flow": "ordering|browsing|null", "flow_step": "awaiting_options|awaiting_qty|collecting_items|awaiting_delivery|awaiting_address|awaiting_payment|null", "flow_data": {"selected_item": {"id":"DB_ID","name":"Name","type":"product"}, "cart": [{"product_id":"DB_ID","product_name":"Name","quantity":1,"variant":"","modifiers":[]}], "delivery_type":"pickup|delivery", "delivery_address":""}}
@@ -407,6 +415,11 @@ def _build_response_format(btype: str) -> str:
     elif btype in _RF_BOOKING_TYPES:
         actions = _RF_ACTIONS_SERVICE_IMAGE + _RF_ACTIONS_BOOKING + _RF_ACTIONS_COMMON
         flow    = _RF_FLOW_BOOKING
+    elif btype == "support":
+        # Pure inquiry handling: answer, tag, escalate. No catalog is loaded
+        # for this type, so it must not be offered anything that needs one.
+        actions = _RF_ACTIONS_COMMON
+        flow    = _RF_FLOW_NONE
     else:  # general or unknown — gets everything
         actions = (_RF_ACTIONS_IMAGES + _RF_ACTIONS_ORDER +
                    _RF_ACTIONS_BOOKING + _RF_ACTIONS_COMMON)
@@ -2902,7 +2915,7 @@ def build_system_prompt(
     reply_channel: str = "",
 ) -> str:
     bc = business_config
-    btype = bc.get("type", "retail")
+    btype = bc.get("type", "general")
     currency = bc.get("currency", "KES")
     parts: List[str] = []
 

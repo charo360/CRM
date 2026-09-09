@@ -79,7 +79,11 @@ async def load_context(db, user_id, customer_id, user: dict, message: str = "") 
     bk_type = (user.get("business_knowledge") or {}).get("business_type", "")
     # Business Knowledge holds the type the merchant chose; the settings copy is
     # the sign-up default. Read the chosen one first, as the shop and the app do.
-    business_type = (bk_type or settings.get("business_type") or user.get("business_type") or "retail").lower()
+    # "general" rather than "retail": 22 of 27 accounts have never set a type,
+    # and defaulting an unknown business to retail left a salon unable to take
+    # a booking at all. "general" carries both the order and booking blocks, so
+    # an unset business is served whichever it turns out to be.
+    business_type = (bk_type or settings.get("business_type") or user.get("business_type") or "general").lower()
 
     # Load local products
     products = await _load_products(db, user_id)
