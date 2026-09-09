@@ -1,0 +1,68 @@
+"""Coverage for which AI model a picker choice actually bills for.
+
+The app used to label an option "Claude Opus 4.7" while routing it to Claude
+3.5 Sonnet, and "Claude Sonnet 4.5" reached no Claude at all - the routing
+tested for the substring 'claude', which "sonnet-4.5" does not contain. Any
+user on any plan could also select the dearest model, so a free trial could
+run GPT-4o at twelve times the default cost indefinitely.
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from ai_service import (  # noqa: E402
+    FREE_MODEL_CHOICES,
+    MODEL_CHOICES,
+    normalise_model_choice,
+)
+
+
+def test_every_choice_names_a_provider_and_a_model():
+    for choice, (client_type, model_name) in MODEL_CHOICES.items():
+        assert client_type, choice
+        assert model_name, choice
+
+
+def test_only_the_default_is_free():
+    assert FREE_MODEL_CHOICES == {"standard"}
+    assert set(MODEL_CHOICES) - FREE_MODEL_CHOICES == {
+        "premium",
+        "claude",
+        "grok",
+        "deepseek",
+    }
+
+
+def test_the_claude_choice_reaches_claude():
+    # The bug this replaces: 'sonnet-4.5' matched no branch and quietly ran
+    # the default OpenAI model while the app said Claude.
+    client_type, model_name = MODEL_CHOICES["claude"]
+    assert client_type == "claude"
+    assert model_name.startswith("claude-")
+
+
+def test_settings_saved_before_the_rebuild_still_resolve():
+    assert normalise_model_choice("sonnet-4.5") == "claude"
+    assert normalise_model_choice("claude-4.7") == "claude"
+    assert normalise_model_choice("claude-3.5") == "claude"
+    assert normalise_model_choice("gpt-5") == "standard"
+    assert normalise_model_choice("gpt-4") == "premium"
+
+
+def test_unknown_and_empty_values_fall_back_to_the_free_model():
+    for value in (None, "", "   ", "nonsense", "gpt-9000"):
+        assert normalise_model_choice(value) in FREE_MODEL_CHOICES
+
+
+def test_normalising_is_stable():
+    # The gate stores the normalised value, so a second pass must not move it.
+    for choice in MODEL_CHOICES:
+        assert normalise_model_choice(choice) == choice
+
+
+def test_case_and_padding_do_not_slip_past_the_gate():
+    # A choice that normalised to something outside MODEL_CHOICES would be
+    # treated as free and then billed as paid.
+    for value in ("PREMIUM", "  Claude  ", "DeepSeek"):
+        assert normalise_model_choice(value) not in FREE_MODEL_CHOICES

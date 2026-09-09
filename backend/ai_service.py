@@ -10,6 +10,36 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+# What each picker choice actually runs. Held as one table because the app used
+# to label an option "Claude Opus 4.7" while routing it to Claude 3.5 Sonnet,
+# and "Claude Sonnet 4.5" reached no Claude at all — the old code tested for the
+# substring 'claude', which "sonnet-4.5" does not contain.
+MODEL_CHOICES = {
+    'standard': ('openai', 'gpt-5.6-luna'),
+    'premium':  ('openai', 'gpt-4o'),
+    'claude':   ('claude', 'claude-sonnet-5'),
+    'grok':     ('grok', 'grok-4.6'),
+    'deepseek': ('deepseek', 'deepseek-v4-flash'),
+}
+
+# Everything except the default costs several times more per reply, so the
+# picker is gated on a paid plan; see update_settings in server.py.
+FREE_MODEL_CHOICES = {'standard'}
+
+# Settings saved before the picker was rebuilt.
+_LEGACY_MODEL_CHOICES = {
+    'gpt-5': 'standard', 'gpt-4o-mini': 'standard', 'mini': 'standard',
+    'sonnet-4.5': 'claude', 'claude-4.7': 'claude', 'claude-3.5': 'claude',
+    'gpt-4': 'premium', 'gpt-4o': 'premium',
+}
+
+
+def normalise_model_choice(model_pref) -> str:
+    """Map any stored or requested preference onto a key of MODEL_CHOICES."""
+    pref = (model_pref or 'standard').strip().lower()
+    pref = _LEGACY_MODEL_CHOICES.get(pref, pref)
+    return pref if pref in MODEL_CHOICES else 'standard'
+
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
 
 class AIMessageDrafter:
@@ -144,32 +174,17 @@ class AIMessageDrafter:
         return 'openai', os.environ.get('OPENAI_CHAT_MODEL', 'gpt-5.6-luna'), None
 
     def _get_client_and_model(self, model_pref: str = None):
-        """Determine which client and model name to use based on preference"""
-        if not model_pref:
-            model_pref = 'standard'
-            
-        model_pref = model_pref.lower()
-        
-        if 'premium' in model_pref or 'gpt-4' in model_pref:
-            client_type = 'openai'
-            model_name = 'gpt-4o'
-        elif 'claude' in model_pref:
-            client_type = 'claude'
-            model_name = 'claude-3-5-sonnet-latest'
-        elif 'grok' in model_pref:
-            client_type = 'grok'
-            model_name = 'grok-4' 
-        elif 'deepseek' in model_pref:
-            client_type = 'deepseek'
-            model_name = 'deepseek-chat'
-        else:
+        """Resolve a picker choice to the client and model it actually bills for."""
+        choice = normalise_model_choice(model_pref)
+        if choice == 'standard':
             return self._get_default_client_and_model()
-        
+
+        client_type, model_name = MODEL_CHOICES[choice]
         client = self.clients.get(client_type)
         if not client:
             logger.warning(f"Provider {client_type} not configured, falling back to default")
             return self._get_default_client_and_model()
-            
+
         return client_type, model_name, client
     
     async def draft_followup_message(

@@ -250,14 +250,16 @@ export default function CustomersScreen() {
 
   const getModelShortName = (modelId: string) => {
     switch (modelId) {
-      case 'standard': return 'GPT-4o Mini';
+      case 'standard': return 'GPT-5.6 Luna';
       case 'premium': return 'GPT-4o';
-      case 'gpt-5': return 'GPT-5';
-      case 'claude-4.7': return 'Claude Opus 4.7';
-      case 'claude-3.5': return 'Claude Opus 4.7';
-      case 'sonnet-4.5': return 'Claude Sonnet 4.5';
-      case 'grok': return 'Grok 4.1';
-      case 'deepseek': return 'DeepSeek';
+      case 'claude': return 'Claude Sonnet 5';
+      case 'grok': return 'Grok 4.6';
+      case 'deepseek': return 'DeepSeek V4';
+      // Saved before the picker was rebuilt.
+      case 'gpt-5': return 'GPT-5.6 Luna';
+      case 'claude-4.7':
+      case 'claude-3.5':
+      case 'sonnet-4.5': return 'Claude Sonnet 5';
       default: return 'AI';
     }
   };
@@ -290,12 +292,19 @@ export default function CustomersScreen() {
   }, [navigation, aiModel]);
 
   const handleModelSelect = async (model: string) => {
+    const previous = aiModel;
     setAiModel(model);
     setShowModelSelector(false);
     try {
       await settingsAPI.updateSettings({ ai_model: model });
-    } catch (error) {
-      console.error('Failed to update AI model');
+    } catch (error: any) {
+      // The paid models are gated, so a refusal has to put the picker back
+      // rather than leave it showing a model the server never accepted.
+      setAiModel(previous);
+      Alert.alert(
+        'Not available',
+        error.response?.data?.detail || 'Could not change the AI model.',
+      );
     }
   };
 
@@ -2423,13 +2432,11 @@ export default function CustomersScreen() {
         >
           <View style={{ backgroundColor: '#1E1E1E', borderRadius: 12, padding: 8, width: 200, shadowColor: "#000", shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 3.84, elevation: 5 }}>
             {[
-              { id: 'standard', name: 'GPT-4o Mini' },
-              { id: 'premium', name: 'GPT-4o' },
-              { id: 'gpt-5', name: 'GPT-5' },
-              { id: 'sonnet-4.5', name: 'Claude Sonnet 4.5' },
-              { id: 'claude-4.7', name: 'Claude Opus 4.7' },
-              { id: 'grok', name: 'Grok 4.1' },
-              { id: 'deepseek', name: 'DeepSeek' },
+              { id: 'standard', name: 'GPT-5.6 Luna', note: 'Included' },
+              { id: 'premium', name: 'GPT-4o', note: 'Paid plan' },
+              { id: 'claude', name: 'Claude Sonnet 5', note: 'Paid plan' },
+              { id: 'grok', name: 'Grok 4.6', note: 'Paid plan' },
+              { id: 'deepseek', name: 'DeepSeek V4', note: 'Paid plan' },
             ].map((model) => (
               <TouchableOpacity
                 key={model.id}
@@ -2443,9 +2450,14 @@ export default function CustomersScreen() {
                 }}
                 onPress={() => handleModelSelect(model.id)}
               >
-                <Text style={{ color: aiModel === model.id ? '#25D366' : '#FFFFFF', fontSize: 14, fontWeight: aiModel === model.id ? '600' : '400', flex: 1 }}>
-                  {model.name}
-                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: aiModel === model.id ? '#25D366' : '#FFFFFF', fontSize: 14, fontWeight: aiModel === model.id ? '600' : '400' }}>
+                    {model.name}
+                  </Text>
+                  <Text style={{ color: '#8B9DC3', fontSize: 11, marginTop: 1 }}>
+                    {model.note}
+                  </Text>
+                </View>
                 {aiModel === model.id && (
                   <Ionicons name="checkmark" size={16} color="#25D366" />
                 )}

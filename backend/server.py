@@ -3207,6 +3207,23 @@ async def get_settings(user = Depends(get_current_user)):
 async def update_settings(request: Request, user = Depends(get_current_user)):
     """Update user settings and invalidate cache."""
     body = await request.json()
+
+    # Every picker choice except the default bills several times more per
+    # reply — GPT-4o is 12x the default on input, Claude Sonnet 5 is 10x —
+    # and nothing here used to charge the user for choosing one. A free-trial
+    # account could pick the dearest model and run it indefinitely.
+    if body.get("ai_model") is not None:
+        from ai_service import FREE_MODEL_CHOICES, normalise_model_choice
+        choice = normalise_model_choice(body["ai_model"])
+        if choice not in FREE_MODEL_CHOICES:
+            from entitlements import build_entitlements
+            if not (await build_entitlements(db, user)).get("paid_active"):
+                raise HTTPException(
+                    status_code=402,
+                    detail="Choosing a different AI model needs an active subscription.",
+                )
+        body["ai_model"] = choice
+
     # Top-level fields (currency, country_code) live directly on the user doc
     top_level_fields = {}
     settings_fields = {}
@@ -13913,7 +13930,16 @@ async def update_user_settings(settings: UserSettingsUpdate, user = Depends(get_
         update_data['settings.country_code'] = settings.country_code
     
     if settings.ai_model is not None:
-        update_data['settings.ai_model'] = settings.ai_model
+        from ai_service import FREE_MODEL_CHOICES, normalise_model_choice
+        choice = normalise_model_choice(settings.ai_model)
+        if choice not in FREE_MODEL_CHOICES:
+            from entitlements import build_entitlements
+            if not (await build_entitlements(db, user)).get("paid_active"):
+                raise HTTPException(
+                    status_code=402,
+                    detail="Choosing a different AI model needs an active subscription.",
+                )
+        update_data['settings.ai_model'] = choice
     
     if update_data:
         await db.users.update_one(
