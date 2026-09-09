@@ -63,6 +63,12 @@ _DATED_ORDER_BUSINESS_TYPES = frozenset({"bakery"})
 # a table booked alongside rather than instead.
 _TABLE_BUSINESS_TYPES = frozenset({"restaurant", "food"})
 
+# Shops that also take bookings. "general" means the merchant said they do
+# both, and its AI takes bookings in WhatsApp — so a storefront with only a
+# cart made the same business behave two different ways depending on where
+# the customer met it. Restaurants already worked this way with tables.
+_SHOP_PLUS_BOOKING_TYPES = frozenset({"general"})
+
 # Kept short and concrete so a buyer can pick one without reading a policy.
 _REPORT_REASONS = frozenset({
     "scam", "not_delivered", "counterfeit", "offensive", "other",
@@ -292,6 +298,9 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
             # A restaurant sells food and holds tables; one does not replace
             # the other, so it gets the cart plus a way to book.
             "takes_table_bookings": business_type in _TABLE_BUSINESS_TYPES,
+            # Whether a booking path is offered at all, cart or no cart.
+            "takes_bookings": (business_type in _TABLE_BUSINESS_TYPES
+                               or business_type in _SHOP_PLUS_BOOKING_TYPES),
         }
     return {
         "mode": "booking",
@@ -301,6 +310,7 @@ def _shop_mode(user_doc: dict) -> Dict[str, Any]:
         "needs_wanted_date": False,
         "min_notice_days": 0,
         "takes_table_bookings": False,
+        "takes_bookings": True,
     }
 
 
@@ -908,7 +918,10 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
         # A restaurant books a table, which is not something in its menu, so
         # there is no service to name. Everything else must book a real one.
         table_booking = shop["mode"] == "shop" and shop.get("takes_table_bookings")
-        if not table_booking and shop["mode"] != "booking":
+        # A shop that also takes bookings — "general" — books a real item from
+        # the same catalog it sells from, so it falls through to the branch
+        # below rather than needing a party size.
+        if shop["mode"] != "booking" and not shop.get("takes_bookings"):
             raise HTTPException(400, "This shop takes orders rather than bookings")
 
         service = None
