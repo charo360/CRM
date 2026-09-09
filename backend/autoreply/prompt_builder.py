@@ -98,7 +98,12 @@ TONE:
 # Sent to ORDER businesses: retail, wholesale, food, bakery, grocery, creator, restaurant
 _SHARED_ORDER_BLOCK = """\
 NUMBERED MENUS:
-- Use numbered menus (1️⃣ 2️⃣ 3️⃣) for every product listing.
+- A greeting is not a request for the catalog. To "Niaje", "Hi", "sasa" or
+  "Vipi", reply the way the owner would — greet back and ask what they are
+  after. No list, no prices, no menu.
+- When they ask about ONE item, answer about that item. No list.
+- Use a numbered menu (1️⃣ 2️⃣ 3️⃣) only when you are genuinely offering a
+  choice: they asked what you have, named a category, or asked to see more.
 - Set new_menu: {"1": {"id": "EXACT_DB_ID", "name": "Name", "price": 500, "type": "product"}}
 - ALWAYS use exact DB IDs from the catalog. Never invent IDs.
 - ALWAYS append "0️⃣ View all [use CATALOG ITEM LABEL]" as the last option.
