@@ -116,7 +116,14 @@ async def send_daily_digest(db: AsyncIOMotorDatabase, digest_type: str = "mornin
                 
                 # Send via WhatsApp
                 wa_sent = False
-                if user.get("phone_number") and user.get("whatsapp", {}).get("instance_name"):
+                # instance_name only means a session was set up once. Three
+                # accounts whose WAHA sessions no longer exist were pushed to
+                # twice a day for ten days, every send bouncing. Skip only a
+                # session we positively know is down: a missing flag still
+                # sends, so a dropped webhook cannot silently end the digest.
+                if (user.get("phone_number")
+                        and user.get("whatsapp", {}).get("instance_name")
+                        and user.get("whatsapp", {}).get("connected") is not False):
                     try:
                         from whatsapp_service import get_whatsapp_service, owner_whatsapp_number
                         ws = get_whatsapp_service(db)
@@ -214,7 +221,9 @@ async def send_motivation_message(db: AsyncIOMotorDatabase, is_monday: bool = Fa
                     motivation = await motivation_service.get_midweek_motivation(user_id)
                 
                 # Send via WhatsApp
-                if user.get("phone_number") and user.get("whatsapp", {}).get("instance_name"):
+                if (user.get("phone_number")
+                        and user.get("whatsapp", {}).get("instance_name")
+                        and user.get("whatsapp", {}).get("connected") is not False):
                     try:
                         from whatsapp_service import get_whatsapp_service, owner_whatsapp_number
                         ws = get_whatsapp_service(db)
@@ -320,7 +329,7 @@ async def _sweep_one_user(
             try:
                 phone = user_doc.get("phone_number")
                 wa_cfg = user_doc.get("whatsapp", {})
-                if phone and wa_cfg.get("instance_name"):
+                if phone and wa_cfg.get("instance_name") and wa_cfg.get("connected") is not False:
                     from rex.api_serializers import serialize_home
                     from whatsapp_service import get_whatsapp_service
                     home = serialize_home(orch)
