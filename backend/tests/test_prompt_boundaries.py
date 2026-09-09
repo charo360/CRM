@@ -69,3 +69,26 @@ def test_availability_is_shareable_but_not_the_count():
 def test_the_boundaries_reach_every_business_type():
     for btype in ("retail", "restaurant", "salon", "hotel", "wholesale", "service"):
         assert "WHAT STAYS INSIDE THE BUSINESS" in prompt(btype), btype
+
+
+# ── numbered menus ───────────────────────────────────────────────────────
+
+def test_every_business_type_is_told_to_say_how_to_choose():
+    # A list with no instruction leaves people typing the whole service name
+    # back, or nothing at all. Seen live: two numbered services followed by
+    # "Let me know if you'd like to book one of these!", which never says
+    # that "1" is a valid answer.
+    for btype in ("retail", "restaurant", "salon", "spa", "repair", "hotel"):
+        text = prompt(btype)
+        assert "Reply with the number" in text, btype
+
+
+def test_a_greeting_never_triggers_a_list_in_any_business_type():
+    # The scoping fix originally reached only the retail block; salons and
+    # rentals kept "use numbered menus for every listing".
+    for btype in ("retail", "restaurant", "salon", "spa", "repair", "hotel"):
+        text = prompt(btype)
+        assert "A greeting is not a request for the catalog" in text, btype
+        assert "for every service listing" not in text, btype
+        assert "for every listing" not in text, btype
+        assert "for every product listing" not in text, btype
