@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../context/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -57,6 +58,7 @@ export default function SubscriptionModal({
   entryPoint = 'upgrade',
 }: SubscriptionModalProps) {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
@@ -445,7 +447,7 @@ export default function SubscriptionModal({
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={styles.overlay}>
-        <View style={styles.modal}>
+        <View style={[styles.modal, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <View style={styles.header}>
             <Text style={styles.title}>{isWhatsAppTrial ? 'Verify payment method' : 'Upgrade to Premium'}</Text>
             <TouchableOpacity onPress={onClose} disabled={purchasing}>
@@ -728,6 +730,7 @@ const styles = StyleSheet.create({
   priceContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
+    flexWrap: 'wrap',
     marginBottom: 16,
   },
   packagePriceStrike: {
@@ -759,9 +762,8 @@ const styles = StyleSheet.create({
   priceInterval: {
     fontSize: 12,
     color: '#8B9DC3',
-    marginLeft: 4,
-    alignSelf: 'flex-end',
-    marginBottom: 3,
+    width: '100%',
+    marginTop: 2,
   },
   introBanner: {
     flexDirection: 'row',
