@@ -423,6 +423,13 @@ def _contact_activity_key(contact: dict) -> datetime:
     return datetime.min
 
 
+def _same_number_safe(a, b) -> bool:
+    """Digits-only comparison that never raises on missing values."""
+    da = "".join(ch for ch in str(a or "") if ch.isdigit())
+    db_ = "".join(ch for ch in str(b or "") if ch.isdigit())
+    return bool(da) and bool(db_) and (da == db_ or da[-9:] == db_[-9:])
+
+
 def _display_contact_number(value: object) -> str:
     """Render a contact's number for a person, never exposing an internal LID."""
     text = str(value or "").strip()
@@ -11869,6 +11876,62 @@ async def evolution_webhook(request: Request):
                 from workflows.engine import fire_trigger as _wf_fire
                 from workflows.models import WorkflowEvent as _WFEvent
                 _ws_v2 = get_whatsapp_service(db)
+
+                # ── Is this a customer at all? ────────────────────────────
+                # A business number is also a personal number. V2 replaced the
+                # pipeline that used to ask this, so until now the AI answered
+                # everyone as a shop — including the owner's imported phone
+                # book. Silence is only for cases we are sure about; anything
+                # ambiguous still gets served, because losing a customer is
+                # the mistake nobody ever hears about.
+                from contact_qualifier import qualify as _qualify
+                _ok_to_reply, _verdict, _why = _qualify(customer, body, history)
+                if not _ok_to_reply:
+                    logging.info(
+                        "[Qualify] holding auto-reply for %s (%s): %s",
+                        from_number, _verdict, _why,
+                    )
+                    if customer_id:
+                        await db.customers.update_one(
+                            {"_id": customer_id},
+                            {"$set": {
+                                "needs_human": True,
+                                "needs_human_reason": "Looks personal, not a customer - mark Customer or Personal",
+                                "needs_human_at": datetime.utcnow(),
+                                "qualifier_verdict": _verdict,
+                                "qualifier_reason": _why,
+                            }},
+                        )
+                    # Tell the owner once, so a real customer misread as a
+                    # friend surfaces instead of being met with silence.
+                    if customer and not customer.get("qualifier_owner_notified"):
+                        try:
+                            from whatsapp_service import owner_whatsapp_number as _own
+                            _owner_no = _own(user)
+                            _preview = (body or "")[:100]
+                            if _owner_no and not _same_number_safe(_owner_no, from_number):
+                                _alert = (
+                                    "\U0001f914 *" + str(customer_name or from_number) + "* messaged and it "
+                                    "does not look like a customer, so I have not replied.\n\n"
+                                    "\U0001f4ac _" + _preview + "_\n\n"
+                                    "Open Zilo to reply yourself, or mark them as a Customer "
+                                    "if I got it wrong."
+                                )
+                                await _ws_v2.send_message(
+                                    user_id=user["_id"],
+                                    to_number=_owner_no,
+                                    message=_alert,
+                                    send_context="auto_reply",
+                                )
+                            if customer_id:
+                                await db.customers.update_one(
+                                    {"_id": customer_id},
+                                    {"$set": {"qualifier_owner_notified": True}},
+                                )
+                        except Exception:
+                            logging.exception("[Qualify] could not notify owner")
+                    return
+
                 _v2_result = await _v2_process(
                     db=db,
                     user=user,
