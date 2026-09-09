@@ -175,7 +175,7 @@ async def test_agent_runner_meta_ads_not_configured():
         tool_ctx = ToolContext(db, user)
         res = await run_tool("list_meta_campaigns", tool_ctx, {})
         assert res.get("configured") is False
-        assert "Meta Ads not configured" in res.get("error")
+        assert "Meta Ads not connected" in res.get("error")
 
 
 @pytest.mark.anyio

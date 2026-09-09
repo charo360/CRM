@@ -10036,7 +10036,18 @@ def _extract_qr(data: dict) -> str:
 async def whatsapp_qr_fetch(user = Depends(get_current_user)):
     """Fetch a refreshed QR code for an existing pending instance."""
     import httpx as _httpx, os as _os
+    from entitlements import build_entitlements
     from whatsapp_service import evolution_config_error, whatsapp_owner_id
+
+    # qr-start and connect are gated, and on WAHA this route only reads an
+    # existing session's QR. The Evolution branch below calls
+    # /instance/connect/, which starts one — so this route can link a number
+    # too, and carries the same gate as the others.
+    if not (await build_entitlements(db, user)).get("paid_active"):
+        raise HTTPException(
+            status_code=402,
+            detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.",
+        )
 
     cfg_err = evolution_config_error()
     if cfg_err:

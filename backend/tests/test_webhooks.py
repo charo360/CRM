@@ -165,7 +165,10 @@ async def test_deliver_one_success():
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock()
+        # Must return False. A truthy __aexit__ suppresses the exception
+        # raised inside the async with, so the failure tests silently
+        # exercised the success path and asserted True is False.
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post = AsyncMock(return_value=mock_resp)
         mock_client_cls.return_value = mock_client
 
@@ -200,7 +203,10 @@ async def test_deliver_one_retries_on_failure():
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock()
+        # Must return False. A truthy __aexit__ suppresses the exception
+        # raised inside the async with, so the failure tests silently
+        # exercised the success path and asserted True is False.
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post = AsyncMock(side_effect=Exception("Connection refused"))
         mock_client_cls.return_value = mock_client
 
@@ -237,7 +243,10 @@ async def test_deliver_marks_dead_after_max_attempts():
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock()
+        # Must return False. A truthy __aexit__ suppresses the exception
+        # raised inside the async with, so the failure tests silently
+        # exercised the success path and asserted True is False.
+        mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post = AsyncMock(side_effect=Exception("timeout"))
         mock_client_cls.return_value = mock_client
 
