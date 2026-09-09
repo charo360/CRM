@@ -460,6 +460,22 @@ async def _set_payment_pending(db, action: dict, user_id, customer_id) -> None:
         f"payee={payee_name!r} amount={amount_paid} customer={customer_id}"
     )
 
+    # A customer saying they have paid used to change a field and nothing
+    # else: the owner found out by opening the app and noticing. Money is
+    # claimed here, so it is worth interrupting someone for.
+    try:
+        from payment_notifications import notify_payment_claimed
+
+        _user = await db.users.find_one({"_id": user_id})
+        if _user:
+            _cust = await db.customers.find_one({"_id": customer_id}, {"name": 1})
+            await notify_payment_claimed(
+                db, _user, order=order,
+                customer_name=payee_name or (_cust or {}).get("name") or "A customer",
+            )
+    except Exception as exc:
+        logger.warning("[ActionHandler] payment claim not announced: %s", exc)
+
 
 async def _notify_owner(db, action: dict, customer_id) -> None:
     """Flag customer as needing human attention."""

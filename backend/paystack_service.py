@@ -268,6 +268,25 @@ async def process_charge_success(
             customer_name = cust.get("name", customer_name)
             phone = cust.get("phone_number") or ""
 
+    # The buyer who paid used to get nothing here, while the buyer who did
+    # not got a friendly confirmation from the storefront. Best effort: the
+    # money is already recorded above and must not be lost to a failed send.
+    try:
+        from payment_notifications import notify_payment_received
+
+        await notify_payment_received(
+            db,
+            user,
+            order=order,
+            customer_name=customer_name,
+            customer_phone=phone,
+            amount=parsed["amount_major"],
+            currency=parsed.get("currency") or (order or {}).get("currency") or "",
+            reference=reference,
+        )
+    except Exception as exc:
+        logger.warning("[Paystack] payment recorded but not announced: %s", exc)
+
     return {
         "handled": True,
         "user_id": user_id,
