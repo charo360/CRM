@@ -1058,6 +1058,65 @@ async def health_check():
         "ai": ai_status,
     }
 
+
+@app.get("/health/providers")
+async def health_providers():
+    """Actually call every configured AI provider and report which answer.
+
+    The auto-reply engine falls back to the default model when a provider
+    fails, which keeps customers served but hides the outage completely:
+    a dead xAI key and an Anthropic account out of credit both sat broken
+    for weeks because every reply still looked fine. Nothing else in the
+    system tells anyone a provider has stopped working.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    from ai_service import MODEL_CHOICES, get_drafter
+
+    drafter = get_drafter()
+
+    async def probe(choice: str):
+        client_type, model_name = MODEL_CHOICES[choice]
+        if client_type not in drafter.clients:
+            return choice, {"model": model_name, "ok": False, "error": "no API key configured"}
+        client = drafter.clients[client_type]
+        started = _time.monotonic()
+        try:
+            # Deliberately NOT _call_llm: that falls back to the default model
+            # on failure, so a dead provider answers through a healthy one and
+            # reports itself fine. Call the provider directly so a failure is
+            # a failure.
+            if client_type == "claude":
+                call = drafter._call_claude(client, model_name, "Reply with exactly: OK")
+            else:
+                call = drafter._call_openai_compatible(client, model_name, "Reply with exactly: OK")
+            reply = await _asyncio.wait_for(call, timeout=30)
+            return choice, {
+                "model": model_name,
+                "ok": True,
+                "ms": int((_time.monotonic() - started) * 1000),
+                "reply": (reply or "").strip()[:20],
+            }
+        except Exception as exc:
+            return choice, {
+                "model": model_name,
+                "ok": False,
+                "ms": int((_time.monotonic() - started) * 1000),
+                "error": str(exc)[:160],
+            }
+
+    results = dict(await _asyncio.gather(*(probe(c) for c in MODEL_CHOICES)))
+    # A failing provider still answers through the fallback, so judge each
+    # one by its own probe rather than by whether a reply came back.
+    broken = sorted(c for c, r in results.items() if not r["ok"])
+    return {
+        "status": "degraded" if broken else "ok",
+        "broken": broken,
+        "providers": results,
+    }
+
+
 # ============ HELPER FUNCTIONS ============
 
 def create_token(user_id, phone_number: str) -> str:
