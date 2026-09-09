@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import os
 from typing import Callable
 
@@ -64,8 +65,20 @@ def _parse_subaccount_payload(body: dict) -> dict:
     if not business_name:
         raise ValueError("Enter a subaccount name.")
 
+    # Optional. Paystack emails the merchant directly about settlements and
+    # payout failures; without it a business only ever hears about its money
+    # through Zilo. Owners sign up by phone, so there is nothing to fill this
+    # in from — it has to be asked for, and it stays optional.
+    contact_email = _clean_text(
+        body.get("primary_contact_email") or body.get("contact_email") or body.get("email"),
+        max_len=254,
+    ).lower()
+    if contact_email and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", contact_email):
+        raise ValueError("That email address does not look right.")
+
     return {
         "currency": currency,
+        "contact_email": contact_email,
         "payout_type": payout_type,
         "settlement_bank": settlement_bank,
         "account_number": account_number,
@@ -277,6 +290,8 @@ def register_paystack_routes(
                     "settlement_bank": sub["settlement_bank"],
                     "account_number": sub["account_number"],
                     "percentage_charge": 0,
+                    **({"primary_contact_email": sub["contact_email"]}
+                       if sub.get("contact_email") else {}),
                     "description": f"Zilo workspace payout ({sub['payout_type']})",
                     "currency": sub["currency"],
                 }

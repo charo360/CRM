@@ -599,6 +599,8 @@ export const paystackAPI = {
     payout_type: PaystackPayoutType;
     settlement_bank: string;
     account_number: string;
+    /** Optional. Paystack emails settlement and payout news here directly. */
+    primary_contact_email?: string;
   }) => {
     const response = await apiClient.post('/paystack/connect', {
       ...payload,

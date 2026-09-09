@@ -47,6 +47,9 @@ export default function PaymentSetupModal({
   const [selectedProvider, setSelectedProvider] = useState<PaystackPayoutOption | null>(null);
   const [payoutAccount, setPayoutAccount] = useState('');
   const [merchantName, setMerchantName] = useState(businessName);
+  // Optional. Owners sign up by phone and we hold no email for them, so
+  // without this Paystack has no way to reach them about their own money.
+  const [contactEmail, setContactEmail] = useState('');
   const [loadError, setLoadError] = useState('');
 
   const loadOptions = useCallback(async (type: PaystackPayoutType) => {
@@ -131,6 +134,7 @@ export default function PaymentSetupModal({
         payout_type: payoutType,
         settlement_bank: selectedProvider.code,
         account_number: payoutAccount.trim().replace(/\s/g, ''),
+        ...(contactEmail.trim() ? { primary_contact_email: contactEmail.trim() } : {}),
       });
       const updated = await paystackAPI.getConnection();
       setConnection(updated);
@@ -348,6 +352,22 @@ export default function PaymentSetupModal({
                   {payoutType === 'mobile_money'
                     ? 'Use the number where you want customer payments settled.'
                     : 'Use the bank account where you want customer payments settled.'}
+                </Text>
+
+                <Text style={styles.label}>Email for payout updates (optional)</Text>
+                <TextInput
+                  value={contactEmail}
+                  onChangeText={setContactEmail}
+                  style={styles.input}
+                  placeholder="you@example.com"
+                  placeholderTextColor="#66758D"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  editable={!saving}
+                />
+                <Text style={styles.helperText}>
+                  Paystack will email you directly when money is settled, or if a payout fails.
+                  Leave it blank and you will only hear about payments here in Zilo.
                 </Text>
 
                 <View style={styles.infoCard}>
