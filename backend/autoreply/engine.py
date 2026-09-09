@@ -129,6 +129,31 @@ async def process_message(
             reply_channel=reply_channel,
         )
 
+        # 2b. A buyer arriving from the storefront opens with their order
+        # number. Without the order in front of it the model escalated —
+        # "let me flag this to the team" — for something already in the
+        # database. Put the order, its items and whether it is paid into the
+        # prompt, with a pay link when the business takes online payment.
+        try:
+            from order_lookup import describe_order, find_referenced_order, is_unpaid
+
+            _ref_order = await find_referenced_order(db, user_id, customer_id, message)
+            if _ref_order:
+                _pay_url = None
+                if is_unpaid(_ref_order):
+                    from chat_checkout import checkout_link_for_order
+
+                    _pay_url = await checkout_link_for_order(
+                        db, user, _ref_order, customer=customer, phone=from_number
+                    )
+                system_prompt += "\n\n" + describe_order(_ref_order, _pay_url)
+                logger.info(
+                    "[AutoReplyV2] order %s in context (paid=%s, pay_link=%s)",
+                    _ref_order.get("order_number"), not is_unpaid(_ref_order), bool(_pay_url),
+                )
+        except Exception as exc:
+            logger.warning("[AutoReplyV2] order lookup skipped: %s", exc)
+
         # 3. Build conversation messages.  Numbered replies are resolved from
         # the stored menu before they reach the model, so "1" stays attached
         # to the exact item the customer saw even after an interruption.
