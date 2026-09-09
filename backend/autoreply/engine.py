@@ -402,6 +402,18 @@ async def _call_ai_with_retry(
 
     attempt_messages = messages.copy()
     raw = ""
+    # A configured provider that starts failing — no credit, a dead key, a
+    # response shape we cannot read — must not end the conversation. Once,
+    # and only once, move to the default model before apologising to the
+    # customer. Switching only happens if we are not already on it.
+    switched_to_default = False
+
+    def _switch_to_default():
+        """Return the default provider, or None if it is what we are using."""
+        fb_type, fb_model, fb_client = drafter._get_default_client_and_model()
+        if not fb_client or (fb_type, fb_model) == (client_type, model_name):
+            return None
+        return fb_type, fb_model, fb_client
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -427,6 +439,22 @@ async def _call_ai_with_retry(
                     )},
                 ]
                 continue
+            if not switched_to_default and (fb := _switch_to_default()):
+                client_type, model_name, client = fb
+                switched_to_default = True
+                logger.warning(
+                    f"[AutoReplyV2] {model_pref} kept returning unusable JSON — "
+                    f"retrying on {model_name}"
+                )
+                # The retries are spent, so make the one attempt on the
+                # default model here rather than looping again.
+                try:
+                    return _parse_and_validate(
+                        await _call_provider(client_type, client, model_name,
+                                             system_prompt, messages.copy())
+                    )
+                except Exception:
+                    logger.error("[AutoReplyV2] default model also failed")
             logger.error("[AutoReplyV2] All retries exhausted — using fallback response")
             return _fallback_response()
 
@@ -437,6 +465,19 @@ async def _call_ai_with_retry(
             )
             if attempt < MAX_RETRIES - 1:
                 continue
+            if not switched_to_default and (fb := _switch_to_default()):
+                client_type, model_name, client = fb
+                switched_to_default = True
+                logger.warning(
+                    f"[AutoReplyV2] {model_pref} failed ({exc}) — retrying on {model_name}"
+                )
+                attempt_messages = messages.copy()
+                raw = await _call_provider(client_type, client, model_name,
+                                           system_prompt, attempt_messages)
+                try:
+                    return _parse_and_validate(raw)
+                except Exception:
+                    logger.error("[AutoReplyV2] default model also failed")
             return _fallback_response()
 
     return _fallback_response()
