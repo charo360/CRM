@@ -17385,14 +17385,20 @@ async def create_booking(booking: BookingCreate, user=Depends(get_current_user))
 @api_router.get("/bookings", response_model=List[BookingResponse])
 async def get_bookings(
     status: Optional[str] = None,
+    customer_id: Optional[str] = None,
     limit: int = Query(200, le=500),
     user=Depends(get_current_user)
 ):
-    """Get all bookings for the authenticated business"""
+    """Get bookings for the authenticated business, optionally for one customer."""
     business_id = user.get("business_id", user["_id"])
     query: dict = {"user_id": business_id}
     if status:
         query["status"] = status
+    # The customer profile has always asked for ?customer_id=. FastAPI drops
+    # a query parameter the handler does not declare, so every profile showed
+    # the whole business's booking count as if it were that one customer's.
+    if customer_id:
+        query["customer_id"] = customer_id
     docs = await db.bookings.find(query).sort("created_at", -1).limit(limit).to_list(limit)
     return [_booking_to_response(d) for d in docs]
 
