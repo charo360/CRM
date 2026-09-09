@@ -10,12 +10,13 @@ whatever AI provider + model the business owner has chosen:
   deepseek  → DeepSeek
   gpt-5     → GPT-5
 
-Mini-state (5 fields in conversation_states):
+Mini-state (durable fields in conversation_states):
   active_flow:      "ordering" | "booking" | "browsing" | None
   flow_product_id:  str | None
   flow_step:        "awaiting_qty" | "awaiting_address" | "awaiting_date" | "awaiting_payment" | None
   last_menu:        {"1": {id, name, price, type}, ...} | None
   last_menu_at:     datetime  (2hr TTL)
+  flow_data:        the confirmed cart / fulfilment / booking snapshot
   escalated:        bool
 """
 from __future__ import annotations
@@ -128,11 +129,16 @@ async def process_message(
             reply_channel=reply_channel,
         )
 
-        # 3. Build conversation messages
-        conv_messages = _build_conv_messages(ctx["messages"], message)
+        # 3. Build conversation messages.  Numbered replies are resolved from
+        # the stored menu before they reach the model, so "1" stays attached
+        # to the exact item the customer saw even after an interruption.
+        trusted_event = _trusted_flow_event(ctx, message)
+        conv_messages = _build_conv_messages(ctx["messages"], message, trusted_event)
 
         # 4. Call AI with validation + retry
         response_data = await _call_ai_with_retry(system_prompt, conv_messages, model_pref)
+        _apply_durable_action_facts(response_data, ctx.get("mini_state") or {}, trusted_event)
+        _apply_trusted_actions(response_data, trusted_event)
 
         # 5. Execute CRM actions
         actions = response_data.get("actions", [])
@@ -188,7 +194,11 @@ async def process_message(
 
         # 7. Update mini-state — skip on fallback so flow is preserved
         if not response_data.get("_is_fallback"):
-            await _update_mini_state(db, user_id, customer_id, response_data)
+            await _update_mini_state(
+                db, user_id, customer_id, response_data,
+                existing_state=ctx.get("mini_state") or {},
+                trusted_event=trusted_event,
+            )
 
         # 8. Send images BEFORE the text reply
         # Build product lookup from loaded catalog
@@ -312,16 +322,15 @@ async def process_message(
                         except Exception as img_err:
                             logger.warning(f"[AutoReplyV2] Failed to send catalog image: {img_err}")
 
-        # 9. Send text reply — append checkout link after catalog/product cards.
-        # The WhatsApp conversation still supports numbered replies, while the
-        # same customer can switch to the full browser catalog and checkout.
+        # 9. Send text reply.  A shop link is opt-in: catalog browsing should
+        # stay inside WhatsApp unless the customer asks for the full web shop.
         storefront_url = None
-        catalog_was_shared = any(
-            action.get("type") in {"send_catalog_images", "send_product_image"}
+        storefront_was_requested = any(
+            action.get("type") == "share_storefront"
             for action in actions
             if isinstance(action, dict)
         )
-        if catalog_was_shared:
+        if storefront_was_requested:
             try:
                 from storefront_routes import public_storefront_url_for_user
                 storefront_url = await public_storefront_url_for_user(db, user)
@@ -365,17 +374,358 @@ async def process_message(
         return {"status": "error", "handled_by": "autoreply_v2"}
 
 
+# ── Durable commerce state ───────────────────────────────────────────────────
+
+_NUMBERED_REPLY = re.compile(r"^\s*(?:#\s*)?([0-8])(?:[.)])?\s*$")
+_FLOW_TEXT_FIELDS = (
+    "selected_category", "delivery_type", "delivery_address", "table_number",
+    "date", "time", "address", "checkin_date", "checkout_date", "notes",
+    "last_choice",
+)
+
+
+def _short_text(value: Any, limit: int = 240) -> str:
+    """Return bounded plain text before it is stored as durable flow state."""
+    if value is None:
+        return ""
+    return str(value).strip()[:limit]
+
+
+def _safe_flow_data(value: Any) -> Dict[str, Any]:
+    """Keep only bounded, non-sensitive checkout facts in conversation state."""
+    if not isinstance(value, dict):
+        return {}
+
+    safe: Dict[str, Any] = {}
+    selected = value.get("selected_item")
+    if isinstance(selected, dict):
+        selected_id = _short_text(selected.get("id"), 120)
+        selected_name = _short_text(selected.get("name"), 160)
+        selected_type = _short_text(selected.get("type"), 24).lower()
+        if selected_id and selected_name and selected_type in {"product", "service"}:
+            safe["selected_item"] = {
+                "id": selected_id,
+                "name": selected_name,
+                "type": selected_type,
+            }
+
+    if "cart" in value and isinstance(value.get("cart"), list):
+        cart = []
+        for raw_item in value["cart"][:25]:
+            if not isinstance(raw_item, dict):
+                continue
+            product_id = _short_text(raw_item.get("product_id"), 120)
+            product_name = _short_text(raw_item.get("product_name"), 160)
+            if not product_id or not product_name:
+                continue
+            try:
+                quantity = max(1, min(int(raw_item.get("quantity") or 1), 999))
+            except (TypeError, ValueError):
+                quantity = 1
+            item: Dict[str, Any] = {
+                "product_id": product_id,
+                "product_name": product_name,
+                "quantity": quantity,
+            }
+            variant = _short_text(raw_item.get("variant"), 100)
+            if variant:
+                item["variant"] = variant
+            modifiers = []
+            for raw_modifier in (raw_item.get("modifiers") or [])[:12]:
+                if not isinstance(raw_modifier, dict):
+                    continue
+                group = _short_text(raw_modifier.get("group"), 100)
+                choice = _short_text(raw_modifier.get("choice"), 100)
+                if group and choice:
+                    modifiers.append({"group": group, "choice": choice})
+            if modifiers:
+                item["modifiers"] = modifiers
+            cart.append(item)
+        safe["cart"] = cart
+
+    for field in _FLOW_TEXT_FIELDS:
+        if field in value:
+            text = _short_text(value.get(field), 500 if field in {"delivery_address", "address", "notes"} else 160)
+            if text:
+                safe[field] = text
+    return safe
+
+
+def _merge_flow_data(current: Any, incoming: Any) -> Dict[str, Any]:
+    """Merge a partial AI update without losing confirmed earlier details."""
+    merged = _safe_flow_data(current)
+    update = _safe_flow_data(incoming)
+    for key, value in update.items():
+        # A model that answers an unrelated question may return an empty cart
+        # object.  Empty output is never evidence that the customer discarded
+        # a real cart, so retain the confirmed cart until it is explicitly
+        # changed in a later commerce step.
+        if key == "cart" and not value and merged.get("cart"):
+            continue
+        if key == "selected_item" and isinstance(merged.get(key), dict) and isinstance(value, dict):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def _find_catalog_item(ctx: Dict[str, Any], item_id: str, item_type: str) -> Optional[Dict[str, Any]]:
+    source = ctx.get("services", []) if item_type == "service" else ctx.get("products", [])
+    return next((item for item in source if str(item.get("id")) == str(item_id)), None)
+
+
+def _trusted_flow_event(ctx: Dict[str, Any], message: str) -> Optional[Dict[str, Any]]:
+    """Resolve a bare numbered reply against the menu the backend previously sent.
+
+    The event is generated from server-side state, not guessed by the model.
+    Natural-language messages continue to go straight to V2 unchanged.
+    """
+    state = ctx.get("mini_state") or {}
+    words = (message or "").strip().lower()
+    if any(phrase in words for phrase in ("website", "web shop", "webshop", "catalog link", "shop link", "online checkout", "send me the link")):
+        return {
+            "kind": "storefront_request",
+            "note": "The customer explicitly requested the website/full catalog link. Use share_storefront.",
+            "state": {},
+        }
+    match = _NUMBERED_REPLY.match(message or "")
+    if not match:
+        return None
+    number = match.group(1)
+    flow_step = (state.get("flow_step") or "").lower()
+    flow_data = _safe_flow_data(state.get("flow_data"))
+
+    # At this point a number is a quantity, not a second menu selection.
+    if flow_step in {"awaiting_qty", "awaiting_quantity"} and number != "0":
+        selected = flow_data.get("selected_item") or {}
+        if selected.get("type") == "product":
+            quantity = int(number)
+            cart = list(flow_data.get("cart") or [])
+            matching = next((item for item in cart if item.get("product_id") == selected.get("id")), None)
+            if matching:
+                matching["quantity"] = quantity
+            else:
+                cart.append({
+                    "product_id": selected["id"],
+                    "product_name": selected["name"],
+                    "quantity": quantity,
+                })
+            return {
+                "kind": "quantity",
+                "note": (
+                    f"The customer gave the quantity {quantity} for the selected product "
+                    f"{selected['name']} (ID {selected['id']}). This is a confirmed quantity, not a menu choice."
+                ),
+                "state": {
+                    "active_flow": "ordering",
+                    "flow_step": "awaiting_delivery",
+                    "flow_data": {"cart": cart},
+                },
+            }
+
+    menu = state.get("last_menu") or {}
+    item = menu.get(number)
+    if not isinstance(item, dict):
+        return None
+
+    item_id = _short_text(item.get("id"), 120)
+    item_name = _short_text(item.get("name"), 160)
+    item_type = _short_text(item.get("type"), 24).lower()
+    if not item_id or not item_name:
+        return None
+
+    if item_type in {"product", "service"}:
+        catalog_item = _find_catalog_item(ctx, item_id, item_type) or {}
+        if item_type == "service":
+            next_step = "awaiting_date"
+            active_flow = "booking"
+        else:
+            has_options = bool(catalog_item.get("variants") or catalog_item.get("modifier_groups"))
+            next_step = "awaiting_options" if has_options else "awaiting_qty"
+            active_flow = "ordering"
+        return {
+            "kind": "menu_item",
+            "note": (
+                f"The customer selected menu item {number}: {item_type} {item_name} (ID {item_id}). "
+                "Treat this as an exact confirmed selection, not an ambiguous number."
+            ),
+            "state": {
+                "active_flow": active_flow,
+                "flow_product_id": item_id,
+                "flow_step": next_step,
+                "flow_data": {
+                    "selected_item": {"id": item_id, "name": item_name, "type": item_type},
+                },
+                "clear_menu": True,
+            },
+            "force_actions": (
+                [{"type": "send_product_image", "product_id": item_id}]
+                if catalog_item.get("images") or catalog_item.get("image_url")
+                else []
+            ),
+        }
+
+    if item_type == "category":
+        return {
+            "kind": "category",
+            "note": f"The customer selected the exact category {item_name}. Show only its matching items next.",
+            "state": {
+                "active_flow": "browsing",
+                "flow_step": "choosing_item",
+                "flow_data": {"selected_category": item_name},
+                "clear_menu": True,
+            },
+        }
+
+    if item_type == "catalog":
+        return {
+            "kind": "storefront_request",
+            "note": "The customer selected View all products. Share the full catalog link and let them keep their current WhatsApp conversation state.",
+            "force_actions": ["share_storefront"],
+            "state": {},
+        }
+
+    return {
+        "kind": "option",
+        "note": f"The customer selected the exact option {item_name} (ID {item_id}). Keep the current flow and apply it.",
+        "state": {"flow_data": {"last_choice": item_name}, "clear_menu": True},
+    }
+
+
+def _apply_trusted_actions(response_data: Dict[str, Any], trusted_event: Optional[Dict[str, Any]]) -> None:
+    """Ensure backend-confirmed customer choices cause their required action.
+
+    V2 still writes the friendly reply, but it cannot accidentally omit a
+    catalog link the customer explicitly selected or an image for the exact
+    product they chose from a stored menu.
+    """
+    if not trusted_event:
+        return
+    actions = response_data.get("actions")
+    if not isinstance(actions, list):
+        actions = []
+        response_data["actions"] = actions
+
+    for forced in trusted_event.get("force_actions") or []:
+        forced_action = {"type": forced} if isinstance(forced, str) else forced
+        if not isinstance(forced_action, dict) or not forced_action.get("type"):
+            continue
+        exists = any(
+            isinstance(action, dict)
+            and action.get("type") == forced_action["type"]
+            and (
+                forced_action["type"] != "send_product_image"
+                or action.get("product_id") == forced_action.get("product_id")
+            )
+            for action in actions
+        )
+        if not exists:
+            actions.append(forced_action)
+
+    if trusted_event.get("kind") == "storefront_request" and response_data.get("_is_fallback"):
+        response_data["reply"] = "Here is the full catalog. You can browse everything there, or continue chatting with me here anytime."
+
+
+def _apply_durable_action_facts(
+    response_data: Dict[str, Any],
+    existing_state: Dict[str, Any],
+    trusted_event: Optional[Dict[str, Any]],
+) -> None:
+    """Carry confirmed commerce facts into an order or booking action.
+
+    The model still chooses the natural wording and decides when the customer
+    has confirmed.  Once it creates a real CRM record, however, previously
+    confirmed items and details must not disappear merely because an earlier
+    message fell outside the conversation-history window.
+    """
+    snapshot = _safe_flow_data(existing_state.get("flow_data"))
+    event_state = (trusted_event or {}).get("state") or {}
+    if isinstance(event_state, dict) and "flow_data" in event_state:
+        snapshot = _merge_flow_data(snapshot, event_state.get("flow_data"))
+    ai_flow_update = response_data.get("flow_update") or {}
+    if isinstance(ai_flow_update, dict) and "flow_data" in ai_flow_update:
+        snapshot = _merge_flow_data(snapshot, ai_flow_update.get("flow_data"))
+    if not snapshot:
+        return
+
+    actions = response_data.get("actions")
+    if not isinstance(actions, list):
+        return
+
+    saved_cart = snapshot.get("cart") or []
+    selected = snapshot.get("selected_item") or {}
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        action_type = action.get("type")
+        if action_type == "create_order":
+            action_items = action.get("items")
+            if not isinstance(action_items, list):
+                action_items = []
+                action["items"] = action_items
+            indexed = {
+                str(item.get("product_id") or ""): item
+                for item in action_items
+                if isinstance(item, dict) and item.get("product_id")
+            }
+            for saved_item in saved_cart:
+                product_id = str(saved_item.get("product_id") or "")
+                if not product_id:
+                    continue
+                target = indexed.get(product_id)
+                if target is None:
+                    target = {
+                        "product_id": product_id,
+                        "product_name": saved_item.get("product_name", ""),
+                        "quantity": saved_item.get("quantity", 1),
+                    }
+                    action_items.append(target)
+                    indexed[product_id] = target
+                # The state is created from a confirmed choice/quantity, so
+                # it outranks a model omission.  Catalog pricing is still
+                # recalculated by action_handler.py.
+                target["quantity"] = saved_item.get("quantity", target.get("quantity", 1))
+                if saved_item.get("variant") and not target.get("variant"):
+                    target["variant"] = saved_item["variant"]
+                if saved_item.get("modifiers") and not target.get("modifiers"):
+                    target["modifiers"] = saved_item["modifiers"]
+
+            if snapshot.get("delivery_type"):
+                action["delivery_type"] = snapshot["delivery_type"]
+            if snapshot.get("delivery_address") and not action.get("delivery_address"):
+                action["delivery_address"] = snapshot["delivery_address"]
+            if snapshot.get("table_number") and not action.get("table_number"):
+                action["table_number"] = snapshot["table_number"]
+
+        elif action_type == "create_booking":
+            if selected.get("type") == "service":
+                if not action.get("service_id"):
+                    action["service_id"] = selected.get("id", "")
+                if not action.get("service_name"):
+                    action["service_name"] = selected.get("name", "")
+            for field in ("date", "time", "checkin_date", "checkout_date", "notes"):
+                if snapshot.get(field) and not action.get(field):
+                    action[field] = snapshot[field]
+
+
 # ── AI call ───────────────────────────────────────────────────────────────────
 
-def _build_conv_messages(history: List[Dict], current_message: str) -> List[Dict]:
-    """Convert stored messages to API message format, append current message."""
+def _build_conv_messages(
+    history: List[Dict],
+    current_message: str,
+    trusted_event: Optional[Dict[str, Any]] = None,
+) -> List[Dict]:
+    """Convert stored messages to API format and add an internal trusted flow event."""
     messages = []
     for m in history:
         role = "user" if m["role"] == "customer" else "assistant"
         content = (m.get("content") or "").strip()
         if content:
             messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": current_message})
+    content = current_message
+    if trusted_event and trusted_event.get("note"):
+        content += f"\n\n[TRUSTED FLOW EVENT — backend-confirmed: {trusted_event['note']}]"
+    messages.append({"role": "user", "content": content})
     return messages
 
 
@@ -624,11 +974,20 @@ def _fallback_response() -> Dict[str, Any]:
 
 # ── Mini-state update ─────────────────────────────────────────────────────────
 
-async def _update_mini_state(db, user_id, customer_id, response_data: Dict) -> None:
+async def _update_mini_state(
+    db,
+    user_id,
+    customer_id,
+    response_data: Dict,
+    *,
+    existing_state: Optional[Dict[str, Any]] = None,
+    trusted_event: Optional[Dict[str, Any]] = None,
+) -> None:
     if not customer_id:
         return
 
     update: Dict[str, Any] = {"updated_at": datetime.utcnow()}
+    flow_data = _safe_flow_data((existing_state or {}).get("flow_data"))
 
     # Save new menu if Claude/AI sent one this turn
     new_menu = response_data.get("new_menu")
@@ -637,19 +996,48 @@ async def _update_mini_state(db, user_id, customer_id, response_data: Dict) -> N
         update["last_menu_at"] = datetime.utcnow()
 
     # Apply flow_update fields
+    actions = response_data.get("actions") or []
+    terminal_action = any(
+        isinstance(action, dict)
+        and action.get("type") in {"clear_flow", "create_order", "create_booking", "cancel_order", "cancel_booking"}
+        for action in actions
+    )
+
     flow_update = response_data.get("flow_update")
     if flow_update and isinstance(flow_update, dict):
         for field in ("active_flow", "flow_product_id", "flow_step"):
-            if field in flow_update:
+            # A blank AI field is not a customer cancellation.  Preserve an
+            # unfinished state until a terminal action explicitly closes it.
+            if field in flow_update and (flow_update[field] is not None or terminal_action):
                 update[field] = flow_update[field]
+        if "flow_data" in flow_update:
+            flow_data = _merge_flow_data(flow_data, flow_update.get("flow_data"))
+
+    # A bare numeric reply has already been matched to a server-stored menu.
+    # Let that fact win over an AI interpretation of the same digit.
+    event_state = (trusted_event or {}).get("state") or {}
+    if isinstance(event_state, dict):
+        for field in ("active_flow", "flow_product_id", "flow_step"):
+            if field in event_state:
+                update[field] = event_state[field]
+        if "flow_data" in event_state:
+            flow_data = _merge_flow_data(flow_data, event_state.get("flow_data"))
+        # Keep a replacement menu the AI supplied (for example size options)
+        # instead of clearing it after resolving the previous menu choice.
+        if event_state.get("clear_menu") and not (new_menu and isinstance(new_menu, dict)):
+            update["last_menu"] = {}
+            update["last_menu_at"] = None
+
+    if flow_data:
+        update["flow_data"] = flow_data
 
     # clear_flow action wipes everything
-    actions = response_data.get("actions") or []
-    if any(a.get("type") == "clear_flow" for a in actions):
+    if terminal_action:
         update.update({
             "active_flow":     None,
             "flow_product_id": None,
             "flow_step":       None,
+            "flow_data":       {},
             "last_menu":       {},
             "last_menu_at":    None,
         })

@@ -3,7 +3,7 @@ context_loader.py — loads everything Claude needs for one turn.
 
 What gets loaded:
   - Last 10 messages (conversation history = state)
-  - Mini-state (5 fields: active_flow, flow_product_id, flow_step, last_menu+TTL, escalated)
+  - Mini-state (flow, last menu and a durable commerce snapshot)
   - Product catalog (id, name, price, category — sanitized)
   - Services (id, name, price, duration — sanitized)
   - Business config (name, type, currency, payment methods, hours, etc.)
@@ -146,6 +146,10 @@ async def _load_mini_state(db, user_id, customer_id) -> Dict:
         "active_flow":      doc.get("active_flow"),
         "flow_product_id":  doc.get("flow_product_id"),
         "flow_step":        doc.get("flow_step"),
+        # This is the durable source of truth for an unfinished order or
+        # booking.  Unlike message history, it survives a customer asking an
+        # unrelated question halfway through the conversation.
+        "flow_data":         doc.get("flow_data") or {},
         "escalated":        doc.get("escalated", False),
     }
 

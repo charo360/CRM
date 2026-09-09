@@ -119,6 +119,10 @@ class FlowUpdate(BaseModel):
     active_flow: Optional[str] = None          # "ordering" | "booking" | "browsing" | null
     flow_product_id: Optional[str] = None
     flow_step: Optional[str] = None            # "awaiting_qty" | "awaiting_address" | "awaiting_date" | "awaiting_payment"
+    # A small, durable checkout/booking snapshot.  It is deliberately kept
+    # flexible because every business type asks for different details; the
+    # engine validates and stores only safe, bounded fields.
+    flow_data: Optional[Dict[str, Any]] = None
 
 
 # ── Main response ─────────────────────────────────────────────────────────────

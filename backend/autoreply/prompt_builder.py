@@ -77,6 +77,10 @@ PAYMENT — CRITICAL:
   • fire set_payment_pending(payee_name="...", amount_paid=...) + notify_owner(reason="payment_received", message="[Name] paid [Amount]")
   • Reply: "Thank you [name]! 🙏 Payment of [amount] received. The owner will confirm shortly."
 
+CATALOG LINKS:
+- Keep the customer in WhatsApp by default. Do NOT offer or append a website link just because products were shown.
+- Use {"type": "share_storefront"} only when the customer explicitly asks for the full catalog, website, online checkout, or a shareable link.
+
 ESCALATION — set escalate=true when:
 - Customer is angry, uses offensive language, or threatens.
 - Customer asks for a refund or disputes a charge.
@@ -101,6 +105,7 @@ NUMBERED MENUS:
   E.g. for retail: "0️⃣ View all products" / for restaurant: "0️⃣ View all menu items" / for salon: "0️⃣ View all services"
   {"0": {"id": "catalog", "name": "View all [item label]", "price": 0, "type": "catalog"}}
 - When customer replies "0" or "more" → send send_catalog_images (check for category context first).
+- When the customer explicitly asks for the website or full catalog link → use {"type": "share_storefront"}.
 - Resolve numbered replies using LAST MENU SENT if provided.
 
 PRODUCT IMAGES:
@@ -298,23 +303,32 @@ _RF_ACTIONS_COMMON = """\
   {"type": "tag_customer", "tag": "interested|vip|frequent_buyer|complaint"}
   {"type": "set_payment_pending", "order_id": "latest"}
   {"type": "notify_owner", "reason": "payment_received|escalation|complaint|other", "message": "context for owner"}
+  {"type": "share_storefront"}
   {"type": "clear_flow"}"""
 
 _RF_FLOW_ORDER = """\
 flow_update (include only changed fields):
-  {"active_flow": "ordering|browsing|null", "flow_step": "collecting_items|awaiting_delivery|awaiting_address|awaiting_payment|null"}"""
+  {"active_flow": "ordering|browsing|null", "flow_step": "awaiting_options|awaiting_qty|collecting_items|awaiting_delivery|awaiting_address|awaiting_payment|null", "flow_data": {"selected_item": {"id":"DB_ID","name":"Name","type":"product"}, "cart": [{"product_id":"DB_ID","product_name":"Name","quantity":1,"variant":"","modifiers":[]}], "delivery_type":"pickup|delivery", "delivery_address":""}}
+
+FLOW SNAPSHOT RULE: When an order is underway, return the complete current cart and every confirmed delivery detail in flow_data. Keep earlier cart items unless the customer explicitly removes or changes one."""
 
 _RF_FLOW_RESTAURANT = """\
 flow_update (include only changed fields):
-  {"active_flow": "ordering|null", "flow_step": "awaiting_order_type|awaiting_table_number|collecting_items|awaiting_address|awaiting_payment|null"}"""
+  {"active_flow": "ordering|null", "flow_step": "awaiting_options|awaiting_qty|awaiting_order_type|awaiting_table_number|collecting_items|awaiting_address|awaiting_payment|null", "flow_data": {"selected_item": {"id":"DB_ID","name":"Name","type":"product"}, "cart": [{"product_id":"DB_ID","product_name":"Name","quantity":1,"variant":"","modifiers":[]}], "delivery_type":"pickup|delivery|dine_in", "delivery_address":"", "table_number":""}}
+
+FLOW SNAPSHOT RULE: When an order is underway, return the complete current cart and every confirmed fulfilment detail in flow_data. Keep earlier cart items unless the customer explicitly removes or changes one."""
 
 _RF_FLOW_BOOKING = """\
 flow_update (include only changed fields):
-  {"active_flow": "booking|null", "flow_step": "awaiting_date|awaiting_time|awaiting_address|awaiting_payment|null"}"""
+  {"active_flow": "booking|null", "flow_step": "awaiting_date|awaiting_time|awaiting_address|awaiting_payment|null", "flow_data": {"selected_item": {"id":"DB_ID","name":"Name","type":"service"}, "date":"", "time":"", "address":"", "notes":""}}
+
+FLOW SNAPSHOT RULE: When a booking is underway, return every confirmed booking detail in flow_data. Preserve it when the customer asks an unrelated question."""
 
 _RF_FLOW_RENTAL = """\
 flow_update (include only changed fields):
-  {"active_flow": "booking|null", "flow_step": "awaiting_date|awaiting_checkout|awaiting_payment|null"}"""
+  {"active_flow": "booking|null", "flow_step": "awaiting_date|awaiting_checkout|awaiting_payment|null", "flow_data": {"selected_item": {"id":"DB_ID","name":"Name","type":"service"}, "checkin_date":"", "checkout_date":"", "notes":""}}
+
+FLOW SNAPSHOT RULE: When a booking is underway, return every confirmed booking detail in flow_data. Preserve it when the customer asks an unrelated question."""
 
 
 def _build_response_format(btype: str) -> str:
@@ -3055,14 +3069,21 @@ def build_system_prompt(
     )
 
     # ── Current conversation state ──
-    if mini_state.get("active_flow") or mini_state.get("flow_step"):
-        state_lines = ["CURRENT CONVERSATION STATE:"]
+    if mini_state.get("active_flow") or mini_state.get("flow_step") or mini_state.get("flow_data"):
+        state_lines = ["CURRENT CONVERSATION STATE — THIS IS THE SOURCE OF TRUTH:"]
         if mini_state.get("active_flow"):
             state_lines.append(f"  Customer is currently in: {mini_state['active_flow']} flow")
         if mini_state.get("flow_step"):
             state_lines.append(f"  Waiting for customer to provide: {mini_state['flow_step']}")
         if mini_state.get("flow_product_id"):
             state_lines.append(f"  Product/service in discussion: ID={mini_state['flow_product_id']}")
+        if mini_state.get("flow_data"):
+            flow_json = json.dumps(mini_state["flow_data"], ensure_ascii=False)
+            state_lines.append(f"  Confirmed flow details: {flow_json}")
+        state_lines.append(
+            "  Keep these confirmed details through interruptions. Answer an unrelated question naturally, "
+            "then continue from the outstanding step; do not discard or invent cart/booking details."
+        )
         parts.append("\n".join(state_lines))
 
     # ── Last menu (numbered selection anchor) ──
