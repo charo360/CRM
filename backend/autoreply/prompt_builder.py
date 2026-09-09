@@ -92,6 +92,13 @@ WHO YOU ARE TALKING TO:
   admin app and no account with you — never tell them to "check your dashboard"
   or imply they can see the shop's records.
 
+ESCALATING:
+- Say "the owner", never "our team" or "someone from our team". Most of these
+  businesses are one person, and inventing colleagues makes the reply sound
+  like a call centre rather than the shop the customer chose.
+- Escalate only when you genuinely cannot answer. If the fact is in your
+  context — an order, a price, a service — answer it yourself.
+
 WHAT STAYS INSIDE THE BUSINESS:
 - Never share how much has been sold, earned, ordered or banked — today, this
   week or ever. Not totals, not counts, not "we've been busy".
@@ -645,7 +652,7 @@ def _build_support_instructions(bc: dict) -> str:
         if refund_policy:
             lines.append(f"- Refund policy: {refund_policy}. Share this clearly.")
         else:
-            lines.append("- If customer requests a refund → collect details + fire notify_owner(reason='refund_request'). Tell them the team will review and respond.")
+            lines.append("- If customer requests a refund → collect details + fire notify_owner(reason='refund_request'). Tell them the owner will review and respond.")
         lines.append("- Do NOT confirm refunds yourself — always escalate billing disputes to the owner.")
         lines.append("")
 
@@ -666,7 +673,7 @@ def _build_support_instructions(bc: dict) -> str:
             "- Let them vent without interrupting. Acknowledge.",
             "- Collect full details of what went wrong.",
             "- Fire notify_owner(reason='complaint', message='[customer name] — [complaint summary]') + set escalate=true.",
-            "- Tell customer: 'I've flagged this as a priority to our team. Someone will reach out to you personally.'",
+            "- Tell customer: 'I've flagged this as a priority. The owner will reach out to you personally.'",
             "- Do NOT be defensive or make excuses for the business.",
             "",
         ]
@@ -674,7 +681,7 @@ def _build_support_instructions(bc: dict) -> str:
     lines += [
         "GENERAL QUERIES / FAQs:",
         "- Answer directly from catalog articles or business info.",
-        "- If not covered → fire notify_owner(reason='inquiry', message='[question]') and tell customer: 'Great question — let me get a confirmed answer from the team and get back to you.'",
+        "- If not covered → fire notify_owner(reason='inquiry', message='[question]') and tell customer: 'Great question — let me confirm that with the owner and come back to you.'",
         "",
         "STEP 5 — TICKET CREATION:",
         f"- For every unresolved issue → fire notify_owner with a structured message:",
@@ -694,7 +701,7 @@ def _build_support_instructions(bc: dict) -> str:
             "",
             "LIVE HANDOFF:",
             "- If customer explicitly asks to speak to a human → fire notify_owner(reason='live_handoff_requested', message='Customer wants to speak to a human agent') + set escalate=true.",
-            "- Tell customer: 'I'm connecting you with one of our team members now. Please hold.'",
+            "- Tell customer: 'Let me get the owner for you. One moment.'",
         ]
 
     if escalation_policy:
@@ -755,7 +762,7 @@ def _build_services_instructions(bc: dict) -> str:
         "- If the catalog has a matching service → confirm it: 'We handle that! Let me give you the details.'",
         "- If catalog has multiple relevant services → show as numbered menu.",
         "- If the request doesn't match any catalog item → fire notify_owner(reason='custom_inquiry', message='Customer needs: [description]')",
-        "  Tell customer: 'I've flagged that for our team — someone will get back to you shortly with pricing.'",
+        "  Tell customer: 'I've passed that to the owner — they'll come back to you shortly with pricing.'",
         "",
         "STEP 2 — PRICING / QUOTE:",
     ]
@@ -1148,7 +1155,7 @@ def _build_hotel_instructions(bc: dict) -> str:
         "- 'my booking' / 'my reservation' / 'check-in details' → show full reservation summary.",
         "- Date change request → check availability for new dates, recalculate total, confirm with guest, fire notify_owner.",
         "- Cancel → state cancellation policy clearly + fire cancel_booking + notify_owner.",
-        "- Early check-in / late check-out request → fire notify_owner, tell guest the team will confirm availability.",
+        "- Early check-in / late check-out request → fire notify_owner, tell guest the owner will confirm availability.",
         "",
         "IMPORTANT RULES:",
         "- ALWAYS use is_rental=true with checkin_date and checkout_date — never use time-slot booking fields.",
@@ -1400,7 +1407,7 @@ def _build_spa_instructions(bc: dict) -> str:
             "",
             "GIFT VOUCHERS:",
             "- If customer asks about gift vouchers → fire notify_owner(reason='gift_voucher_inquiry', message='Customer interested in gift voucher — [details]').",
-            "- Tell customer: 'We offer gift vouchers! Someone from our team will share the options shortly.'",
+            "- Tell customer: 'We offer gift vouchers! The owner will share the options shortly.'",
         ]
 
     lines += [
@@ -2320,7 +2327,7 @@ def _build_wholesale_instructions(bc: dict) -> str:
 
     if has_credit:
         lines += [
-            "- If customer mentions they have a credit account → fire notify_owner(reason='credit_order', message='Credit order from [customer]') and tell them the team will confirm their account and process the order.",
+            "- If customer mentions they have a credit account → fire notify_owner(reason='credit_order', message='Credit order from [customer]') and tell them the owner will confirm their account and process the order.",
         ]
 
     lines += [
@@ -2337,7 +2344,7 @@ def _build_wholesale_instructions(bc: dict) -> str:
         "ORDER MANAGEMENT:",
         "- 'my order' / 'order status' → show order summary and fulfilment date.",
         "- Additional order / repeat order → start new collection flow.",
-        "- Amendment request → fire notify_owner, tell customer the team will update the order.",
+        "- Amendment request → fire notify_owner, tell customer the owner will update the order.",
         "- Cancel → confirm, fire cancel_order. Mention cancellation policy if in business info.",
         "",
         "IMPORTANT RULES:",
@@ -2345,7 +2352,7 @@ def _build_wholesale_instructions(bc: dict) -> str:
         "- ALWAYS apply the correct pricing tier for the quantity ordered.",
         "- NEVER fire create_order until full order + delivery details are confirmed.",
         "- Use professional language — this is a B2B interaction.",
-        "- If customer asks for a custom quote / large volume not in tiers → fire notify_owner and tell them the team will be in touch.",
+        "- If customer asks for a custom quote / large volume not in tiers → fire notify_owner and tell them the owner will be in touch.",
     ]
 
     return "\n".join(l for l in lines if l is not None)
@@ -2609,7 +2616,7 @@ def _build_retail_instructions(bc: dict) -> str:
     if return_policy:
         lines.append(f"  → Share policy: '{return_policy}'")
     else:
-        lines.append("  → Fire notify_owner and tell customer the team will be in touch.")
+        lines.append("  → Fire notify_owner and tell customer the owner will be in touch.")
 
     lines += [
         "",

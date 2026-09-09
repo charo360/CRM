@@ -108,3 +108,22 @@ def test_a_greeting_is_answered_as_a_greeting_not_a_sales_question():
 def test_the_ai_waits_for_the_customer_to_raise_a_need():
     for btype in ("retail", "salon", "hotel"):
         assert "Wait for them to bring up what they need" in prompt(btype), btype
+
+
+def test_escalation_says_the_owner_not_a_team():
+    # These are mostly one-person shops. "Someone from our team will get back
+    # to you" invents colleagues and reads like a call centre — and the AI was
+    # doing it for things it could answer itself.
+    for btype in ("retail", "salon", "wholesale", "hotel", "restaurant"):
+        # Every line except the rule that forbids the phrase.
+        offenders = [
+            line for line in prompt(btype).splitlines()
+            if ("our team" in line or "the team will" in line)
+            and 'never "our team"' not in line
+        ]
+        assert not offenders, f"{btype}: {offenders[:2]}"
+    assert 'Say "the owner", never "our team"' in prompt("retail")
+
+
+def test_escalation_is_a_last_resort_not_a_reflex():
+    assert "Escalate only when you genuinely cannot answer" in prompt("retail")
