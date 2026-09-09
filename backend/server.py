@@ -2419,7 +2419,7 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     if not entitlements.get("paid_active"):
         raise HTTPException(
             status_code=402,
-            detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.",
+            detail="Verify a payment method in Google Play to connect WhatsApp. There is no subscription fee today; Google may place a temporary card authorization.",
         )
 
     # Start WhatsApp pairing (new user or existing user not connected)
@@ -9771,7 +9771,7 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     if not entitlements.get("paid_active"):
         raise HTTPException(
             status_code=402,
-            detail="Verify a payment method in Google Play to connect WhatsApp. Your free trial starts once it is verified, and you are not charged today.",
+            detail="Verify a payment method in Google Play to connect WhatsApp. Your free trial starts once verified. Google may place a temporary card authorization.",
         )
 
     cfg_err = evolution_config_error()
@@ -9812,7 +9812,7 @@ async def whatsapp_refresh_pairing_code(request: Request, user = Depends(get_cur
 
     entitlements = await build_entitlements(db, user)
     if not entitlements.get("paid_active"):
-        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.")
+        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. There is no subscription fee today; Google may place a temporary card authorization.")
 
     if cfg_err := evolution_config_error():
         raise HTTPException(status_code=503, detail=cfg_err)
@@ -9841,7 +9841,7 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
 
     entitlements = await build_entitlements(db, user)
     if not entitlements.get("paid_active"):
-        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.")
+        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. There is no subscription fee today; Google may place a temporary card authorization.")
 
     cfg_err = evolution_config_error()
     if cfg_err:
