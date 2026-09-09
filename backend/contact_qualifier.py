@@ -37,30 +37,35 @@ BUSINESS_MARKERS = (
     "rangi", "quantity", "how many", "ngapi", "shop", "duka", "open", "closed",
 )
 
-# Someone talking to a person, not a business. Kept deliberately narrow: each
-# of these has no ordinary commercial reading, because a false positive here
-# means going quiet on a paying customer.
-PERSONAL_MARKERS = (
-    "how are you", "habari yako", "uko aje", "mambo vipi", "niaje buda",
-    "long time", "siku mingi", "miss you", "nakumiss", "love you", "nakupenda",
-    "happy birthday", "hbd", "congrats", "pole sana", "rest in peace", "rip",
-    "my brother", "my sister", "bro ", "sis ", "buda", "mzee wangu",
-    "tuonane", "see you later", "tukutane", "wacha nikupigie", "call me later",
-    "it's me", "ni mimi", "ni mimi hapa", "unanijua", "you know me",
-    "family", "familia", "mama", "baba", "dad", "mum", "mom",
+# Signals with no ordinary commercial reading. One of these is enough to
+# stop: waiting for a second means selling to someone we already know is not
+# a customer, which is exactly what the owner asked not to happen.
+PERSONAL_MARKERS_STRONG = (
+    "miss you", "nakumiss", "love you", "nakupenda", "my love", "mpenzi",
+    "happy birthday", "hbd", "rest in peace", "rip", "pole sana kwa msiba",
+    "my brother", "my sister", "buda", "mzee wangu", "bro ", "sis ",
+    "tuonane", "tukutane", "see you later", "wacha nikupigie",
+    "it's me", "ni mimi", "unanijua", "you know me",
+    "mama", "baba", "dad", "mum", "mom", "family", "familia",
     "church", "kanisa", "wedding", "harusi", "funeral", "mazishi",
-    "how was your day", "umeamkaje", "good night", "usiku mwema",
-    "sasa we", "uko wapi kwani", "kwani umepotea",
-    # Endearments. "baby" is deliberately absent: a clothes shop sells baby
-    # clothes, and one wrong silence costs a sale.
-    # One marker per idea: listing " bb" and "bb " counted the single word
-    # twice and silenced a first-time contact off one "Hello bb".
-    " bb ", "babe", "mpenzi", "my love", "sweetheart", "sweetie",
+    "good night", "usiku mwema", "how was your day",
+    " bb ", "babe", "sweetheart", "sweetie",
 )
+
+# Friendly, but a polite customer opens this way too. One is not enough;
+# two, with nothing commercial anywhere, is.
+PERSONAL_MARKERS_SOFT = (
+    "how are you", "habari yako", "uko aje", "mambo vipi", "niaje buda",
+    "long time", "siku mingi", "congrats", "umeamkaje",
+    "sasa we", "uko wapi kwani", "kwani umepotea", "call me later",
+)
+
+PERSONAL_MARKERS = PERSONAL_MARKERS_STRONG + PERSONAL_MARKERS_SOFT
 
 # A verdict the owner made by hand always wins over anything inferred here.
 OWNER_MARKED_PERSONAL = "owner marked this contact personal"
-LOOKS_PERSONAL = "no business signal and clear personal signals"
+LOOKS_PERSONAL = "no business signal and repeated friendly signals"
+CLEARLY_PERSONAL = "said something only a person says to a person"
 
 
 def _hits(text: str, markers: Iterable[str]) -> int:
@@ -103,13 +108,19 @@ def qualify(
     if business_now or business_before:
         return True, "customer", "talking about products, money or delivery"
 
-    personal_now = _hits(message, PERSONAL_MARKERS)
-    personal_before = sum(_hits(t, PERSONAL_MARKERS) for t in incoming)
-    personal_total = personal_now + personal_before
+    # Something only a person says to a person — stop now rather than sell
+    # one more message to someone we already know is not a customer.
+    if _hits(message, PERSONAL_MARKERS_STRONG) or any(
+        _hits(t, PERSONAL_MARKERS_STRONG) for t in incoming
+    ):
+        return False, "personal", CLEARLY_PERSONAL
 
-    # One personal-sounding line on a first contact is not enough. Two, with
-    # nothing commercial anywhere in the conversation, is.
-    if personal_total >= 2:
+    # Friendly but ambiguous. A polite customer opens this way too, so one is
+    # not enough; a pattern with nothing commercial anywhere is.
+    soft = _hits(message, PERSONAL_MARKERS_SOFT) + sum(
+        _hits(t, PERSONAL_MARKERS_SOFT) for t in incoming
+    )
+    if soft >= 2:
         return False, "personal", LOOKS_PERSONAL
 
     # Everything else — a bare greeting, an unclear opener, a photo with no

@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contact_qualifier import (  # noqa: E402
+    CLEARLY_PERSONAL,
     LOOKS_PERSONAL,
     OWNER_MARKED_PERSONAL,
     qualify,
@@ -85,19 +86,22 @@ def test_business_talk_anywhere_in_the_history_keeps_the_ai_on():
 
 # ── a friend must not be sold to ─────────────────────────────────────────
 
-def test_clearly_personal_talk_stops_the_ai():
-    reply, verdict, reason = qualify(
-        None, "tuonane later", incoming("habari yako", "long time bro")
-    )
+def test_clearly_personal_talk_stops_the_ai_at_once():
+    # The owner asked for this: once it knows, it stops. Selling one more
+    # message to someone we already know is not a customer is the harm.
+    for text in ("tuonane kesho", "love you", "happy birthday", "ni mimi",
+                 "call mama for me", "good night"):
+        reply, verdict, reason = qualify(None, text)
+        assert reply is False, text
+        assert verdict == "personal", text
+        assert reason == CLEARLY_PERSONAL, text
+
+
+def test_two_soft_signals_are_enough_when_nothing_is_commercial():
+    reply, verdict, reason = qualify(None, "habari yako, long time")
     assert reply is False
     assert verdict == "personal"
     assert reason == LOOKS_PERSONAL
-
-
-def test_two_personal_signals_in_one_message_are_enough():
-    reply, verdict, _ = qualify(None, "habari yako my brother, long time")
-    assert reply is False
-    assert verdict == "personal"
 
 
 def test_family_and_occasions_read_as_personal():
@@ -123,17 +127,11 @@ def test_missing_customer_and_empty_history_do_not_crash():
         assert verdict == "unclear"
 
 
-def test_a_pattern_of_endearment_reads_personal():
-    # Real conversations on this account: "Hello bb" then "Thx bb".
-    reply, verdict, _ = qualify(None, "Thx bb", incoming("Hello bb"))
+def test_one_endearment_is_now_enough_to_stop():
+    # "Hello bb" is not something a customer opens with.
+    reply, verdict, _ = qualify(None, "Hello bb")
     assert reply is False
     assert verdict == "personal"
-
-
-def test_one_endearment_alone_still_gets_answered():
-    reply, verdict, _ = qualify(None, "Hello bb")
-    assert reply is True
-    assert verdict == "unclear"
 
 
 def test_baby_clothes_are_not_mistaken_for_an_endearment():
