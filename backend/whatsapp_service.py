@@ -40,6 +40,15 @@ _DAILY_SEND_LIMITS: Dict[str, int] = {
 }
 
 
+def _same_number(a, b) -> bool:
+    """True when two phone numbers are the same line, however they are written."""
+    da = "".join(ch for ch in str(a or "") if ch.isdigit())
+    db_ = "".join(ch for ch in str(b or "") if ch.isdigit())
+    if not da or not db_:
+        return False
+    return da == db_ or da[-9:] == db_[-9:]
+
+
 def owner_whatsapp_number(user: dict) -> str:
     """Return the number a WhatsApp message to the business owner can reach.
 
@@ -508,6 +517,11 @@ class WhatsAppService:
             # the plan; read here so send_message need not fetch the user again.
             from ai_service import model_message_cost
             message_cost = model_message_cost(((user or {}).get("settings") or {}).get("ai_model"))
+            # An owner can be reached on the linked WhatsApp or on the number
+            # they signed up with, and alerts have gone to both. Treat either
+            # as the owner so neither is billed.
+            _rec = record or user or {}
+            owner_numbers = [owner_whatsapp_number(_rec), (_rec or {}).get("phone_number")]
             monthly_sent = usage.get("outbound_messages_month", 0)
             monthly_cap = usage.get("outbound_messages_cap", 0)
             monthly_remaining = usage.get("outbound_messages_remaining", 0)
@@ -523,11 +537,13 @@ class WhatsAppService:
                 "plan": plan,
                 "dashboard_access": ent.get("dashboard_access"),
                 "message_cost": message_cost,
+                "owner_numbers": [n for n in owner_numbers if n],
             }
         except Exception as e:
             logger.warning(f"[check_message_limit] {user_id}: {e}")
             return {"sent": 0, "limit": 50, "remaining": 50, "daily_sent": 0,
-                    "daily_limit": 50, "plan": "free", "message_cost": 1}
+                    "daily_limit": 50, "plan": "free", "message_cost": 1,
+                    "owner_numbers": []}
 
     async def send_message(
         self,
@@ -601,7 +617,13 @@ class WhatsAppService:
                 "from_number": to_number,
                 "created_at": datetime.utcnow(),
                 "send_context": send_context,
-                "message_cost": limits.get("message_cost", 1),
+                # The daily digest, the motivation message and the "new contact
+                # messaged you" alert all go to the owner's own WhatsApp. They
+                # are the app talking to its user, not the business reaching a
+                # customer, so they must not eat the customer allowance.
+                "message_cost": 0 if any(_same_number(to_number, n)
+                                         for n in limits.get("owner_numbers") or [])
+                                else limits.get("message_cost", 1),
             }
             if media_url:
                 msg_doc["image_url"] = media_url

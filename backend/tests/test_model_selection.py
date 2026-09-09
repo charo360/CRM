@@ -102,3 +102,26 @@ def test_unknown_or_dropped_choices_cost_one_message():
 
     for value in (None, "", "grok", "grok-4.6", "nonsense"):
         assert model_message_cost(value) == 1
+
+
+def test_the_apps_own_alerts_do_not_use_the_customer_allowance():
+    # The daily digest, the motivation message and "new contact messaged you"
+    # all go to the owner's own WhatsApp. On one live account 7 of 21 billed
+    # messages were the app talking to its user, a third of the allowance.
+    from whatsapp_service import _same_number
+
+    owner_whatsapp, owner_login = "12026995029", "+16505553434"
+    assert _same_number("+12026995029", owner_whatsapp)
+    assert _same_number(owner_login, owner_login)
+    # a customer must still be billed
+    assert not _same_number("+254110400963", owner_whatsapp)
+    assert not _same_number("+12405054127", owner_whatsapp)
+
+
+def test_number_matching_survives_formatting_and_missing_values():
+    from whatsapp_service import _same_number
+
+    assert _same_number("+1 240 505 4127", "12405054127")
+    assert _same_number("0110400963", "+254110400963")  # local vs international
+    for a, b in ((None, None), ("", "+123"), ("+123", "")):
+        assert not _same_number(a, b)
