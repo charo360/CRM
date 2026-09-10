@@ -5518,30 +5518,36 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
     result = await _drop_dismissed_suggestions(business_id, result)
     return serialize_doc(result[:30])  # Only return top 30 most urgent customers
 
-async def _drop_dismissed_suggestions(business_id, rows: list) -> list:
-    """Remove suggestions the owner has already waved away.
+async def _effective_dismissed_ids(business_id, candidate_ids=None) -> set:
+    """Customers the owner has waved away and who have not written since.
 
-    A dismissal lasts until that person gets in touch again, at which point
-    they are worth surfacing once more -- somebody who messages you after you
-    decided to leave them alone is a different situation.
+    A dismissal lasts until that person gets in touch again -- somebody who
+    messages you after you decided to leave them alone is a different
+    situation. That rule cannot be written as a plain Mongo filter, so it is
+    resolved here once and the answer reused.
 
-    Two queries for the whole list rather than two per row: one for the
-    dismissal times, one for any inbound message since the earliest of them.
+    One definition, because the Needs Attention list and the counters above it
+    must agree. They did not at first: removing a row took it off the list
+    while the "7+ days" and "30+ days" figures carried on counting it, which
+    reads as the button having done nothing.
+
+    Two queries whatever the size of the list: one for the dismissal times, one
+    for any inbound message since the earliest of them.
     """
-    if not rows:
-        return rows
+    query = {"user_id": business_id,
+             "followup_dismissed_at": {"$exists": True, "$ne": None}}
+    if candidate_ids is not None:
+        candidate_ids = list(candidate_ids)
+        if not candidate_ids:
+            return set()
+        query["_id"] = {"$in": candidate_ids}
 
-    ids = [r["id"] for r in rows]
     dismissed = {}
-    async for c in db.customers.find(
-        {"_id": {"$in": ids}, "followup_dismissed_at": {"$exists": True, "$ne": None}},
-        {"followup_dismissed_at": 1},
-    ):
+    async for c in db.customers.find(query, {"followup_dismissed_at": 1}):
         dismissed[c["_id"]] = c["followup_dismissed_at"]
     if not dismissed:
-        return rows
+        return set()
 
-    # Anyone who has written in since they were dismissed comes back.
     earliest = min(dismissed.values())
     spoke_again = {}
     async for row in db.messages.aggregate([
@@ -5555,16 +5561,20 @@ async def _drop_dismissed_suggestions(business_id, rows: list) -> list:
     ]):
         spoke_again[row["_id"]] = row["last"]
 
-    kept = []
-    for r in rows:
-        at = dismissed.get(r["id"])
-        if at is None:
-            kept.append(r)
-            continue
-        since = spoke_again.get(r["id"])
-        if since is not None and since > at:
-            kept.append(r)
-    return kept
+    return {
+        cid for cid, at in dismissed.items()
+        if not (spoke_again.get(cid) is not None and spoke_again[cid] > at)
+    }
+
+
+async def _drop_dismissed_suggestions(business_id, rows: list) -> list:
+    """Remove suggestions the owner has already waved away."""
+    if not rows:
+        return rows
+    hidden = await _effective_dismissed_ids(business_id, [r["id"] for r in rows])
+    if not hidden:
+        return rows
+    return [r for r in rows if r["id"] not in hidden]
 
 
 @api_router.get("/customers/cold-with-reasons")
@@ -6343,29 +6353,35 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
         "user_id": business_id,
         "show_date": {"$gte": today, "$lt": tomorrow},
     }).to_list(100)
-    analyzed_count = len(smart_insights)
+    # Anyone the owner has taken off the list is not still "needing attention".
+    # These figures sit directly above that list, so counting a dismissed
+    # customer here makes the removal look like it did nothing.
+    hidden = await _effective_dismissed_ids(business_id)
+    _not_hidden = [{"_id": {"$nin": list(hidden)}}] if hidden else []
+
+    analyzed_count = sum(1 for a in smart_insights if a["customer_id"] not in hidden)
 
     # Count non-analyzed customers that still need attention
     non_analyzed_customers = await db.customers.find({
         "user_id": business_id,
-        "$and": [_is_customer, _no_reply_week]
+        "$and": [_is_customer, _no_reply_week] + _not_hidden
     }).to_list(100)
-    
+
     analyzed_ids = {a["customer_id"] for a in smart_insights}
     non_analyzed_count = sum(1 for c in non_analyzed_customers if c["_id"] not in analyzed_ids)
-    
+
     # Total shown in Needs Attention list = analyzed + non-analyzed (up to 30 max per endpoint)
     neglected_week = min(analyzed_count + non_analyzed_count, 30)
-    
+
     neglected_month = await db.customers.count_documents({
         "user_id": business_id,
-        "$and": [_is_customer, _no_reply_month]
+        "$and": [_is_customer, _no_reply_month] + _not_hidden
     })
     # New customers (created in last 7 days) with no follow-up
     new_cutoff = now - timedelta(days=7)
     new_customers = await db.customers.find({
         "user_id": business_id,
-        "$and": [_is_customer, {"created_at": {"$gte": new_cutoff}}]
+        "$and": [_is_customer, {"created_at": {"$gte": new_cutoff}}] + _not_hidden
     }).to_list(None)
     new_no_followup = 0
     for c in new_customers:
@@ -6379,7 +6395,7 @@ async def get_followup_suggestions(user = Depends(get_current_user)):
         "$and": [
             _is_customer,
             {"$or": [{"last_contacted": {"$lt": cutoff_week}}, {"last_contacted": None}]}
-        ]
+        ] + _not_hidden
     })
     return {
         "neglected_week": neglected_week,
