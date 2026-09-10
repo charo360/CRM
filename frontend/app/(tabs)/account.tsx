@@ -751,7 +751,7 @@ export default function AccountScreen() {
         // Say what the trial does and does not cover. A bare countdown reads
         // as "you have paid", so someone then meets the WhatsApp payment
         // screen believing they already dealt with it.
-        ? `Free CRM trial until ${ziloTrialEndsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}. Connecting WhatsApp still needs a payment method — no charge today.`
+        ? `Free CRM trial until ${ziloTrialEndsAt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}. Connecting WhatsApp still needs payment verification. Google may place a temporary card authorization.`
         : 'Free CRM trial running. Connecting WhatsApp still needs a payment method.'
       : isGooglePlayTrial
         ? `${renewalLabel} • Then ${activePlanName} continues unless you cancel in Google Play.`
@@ -939,7 +939,7 @@ export default function AccountScreen() {
                   <Text style={{ color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginLeft: 10 }}>Connect WhatsApp</Text>
                 </View>
                 <Text style={{ color: '#8A9BB5', fontSize: 13, marginBottom: 16 }}>
-                  Start a Google Play free trial before linking your number. A payment method is required, but you will not be charged today.
+                  Start a Google Play free trial before linking your number. There is no subscription fee today, but Google may temporarily reserve a small amount on a card to verify it.
                 </Text>
                 <TextInput
                   style={{

@@ -2696,8 +2696,6 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     2. Starts WhatsApp pairing via Evolution API
     3. Returns session_token + pairing_code for the frontend
     """
-    from country_utils import detect_country_from_phone, get_payment_methods_for_country
-
     phone = request.phone_number.strip()
     if not phone or len(phone) < 8:
         raise HTTPException(status_code=400, detail="Valid phone number is required")
@@ -2798,26 +2796,15 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
     is_new_user = user is None
 
     if is_new_user:
-        # Create new user (business_name will be set in /auth/register after connect)
-        country_code = request.country_code or detect_country_from_phone(phone)
-        country_config = get_payment_methods_for_country(country_code)
-
-        user_id = str(uuid.uuid4())
-        user_doc = {
-            "_id": user_id,
-            "phone_number": phone,
-            "business_name": "",
-            "owner_name": "",
-            "subscription_plan": None,
-            "subscription_active": False,
-            "country_code": country_code,
-            "currency": country_config["currency"],
-            "payment_methods": [{"name": m, "details": ""} for m in country_config["methods"][:3]],
-            "created_at": datetime.utcnow(),
-            "setup_complete": False,
-        }
-        await db.users.insert_one(user_doc)
-        user = user_doc
+        # This is a legacy authentication route. Creating the business and its
+        # WAHA session here let a new customer link WhatsApp before Google Play
+        # had verified a payment method. New registrations now use phone OTP,
+        # complete the business profile, and link from Account through the
+        # paid-gated /whatsapp/connect endpoint.
+        raise HTTPException(
+            status_code=402,
+            detail="Create your Zilo account with phone verification first, then verify a payment method before connecting WhatsApp.",
+        )
     else:
         user_id = user["_id"]
 
@@ -2843,6 +2830,17 @@ async def whatsapp_auth_start(request: WhatsAppAuthStart):
                 })
         except Exception as e:
             logging.warning(f"Error checking existing connection for {user_id}: {e}")
+
+    # Older app builds can still call this legacy pairing route. Apply the same
+    # server-side entitlement gate as every current WhatsApp linking endpoint,
+    # so changing screens or app versions cannot bypass payment verification.
+    from entitlements import build_entitlements
+    entitlements = await build_entitlements(db, user)
+    if not entitlements.get("paid_active"):
+        raise HTTPException(
+            status_code=402,
+            detail="Verify a payment method in Google Play to connect WhatsApp. There is no subscription fee today; Google may place a temporary card authorization.",
+        )
 
     # Start WhatsApp pairing (new user or existing user not connected)
     whatsapp_service = get_whatsapp_service(db)
@@ -10261,7 +10259,7 @@ async def whatsapp_connect(request: Request, user = Depends(get_current_user)):
     if not entitlements.get("paid_active"):
         raise HTTPException(
             status_code=402,
-            detail="Verify a payment method in Google Play to connect WhatsApp. Your free trial starts once it is verified, and you are not charged today.",
+            detail="Verify a payment method in Google Play to connect WhatsApp. Your free trial starts once verified. Google may place a temporary card authorization.",
         )
 
     cfg_err = evolution_config_error()
@@ -10302,7 +10300,7 @@ async def whatsapp_refresh_pairing_code(request: Request, user = Depends(get_cur
 
     entitlements = await build_entitlements(db, user)
     if not entitlements.get("paid_active"):
-        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.")
+        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. There is no subscription fee today; Google may place a temporary card authorization.")
 
     if cfg_err := evolution_config_error():
         raise HTTPException(status_code=503, detail=cfg_err)
@@ -10331,7 +10329,7 @@ async def whatsapp_qr_start(user = Depends(get_current_user)):
 
     entitlements = await build_entitlements(db, user)
     if not entitlements.get("paid_active"):
-        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. You are not charged today.")
+        raise HTTPException(status_code=402, detail="Verify a payment method in Google Play to connect WhatsApp. There is no subscription fee today; Google may place a temporary card authorization.")
 
     cfg_err = evolution_config_error()
     if cfg_err:

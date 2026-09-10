@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { apiClient } from '../context/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -57,6 +58,7 @@ export default function SubscriptionModal({
   entryPoint = 'upgrade',
 }: SubscriptionModalProps) {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [plans, setPlans] = useState<Plan[]>([]);
   const [storePrices, setStorePrices] = useState<Record<string, StorePrice>>({});
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
@@ -445,7 +447,7 @@ export default function SubscriptionModal({
   return (
     <Modal visible={visible} animationType="slide" transparent>
       <View style={styles.overlay}>
-        <View style={styles.modal}>
+        <View style={[styles.modal, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           <View style={styles.header}>
             <Text style={styles.title}>{isWhatsAppTrial ? 'Verify payment method' : 'Upgrade to Premium'}</Text>
             <TouchableOpacity onPress={onClose} disabled={purchasing}>
@@ -472,7 +474,7 @@ export default function SubscriptionModal({
                   </Text>
                   <Text style={styles.introSub}>
                     {isWhatsAppTrial
-                      ? 'Google Play will securely verify your payment method. No charge today.'
+                      ? 'No subscription fee today. Google may temporarily reserve a small amount on a card to verify it.'
                       : 'Limited-time launch offer for new subscribers'}
                   </Text>
                 </View>
@@ -604,7 +606,7 @@ export default function SubscriptionModal({
 
               <Text style={styles.disclaimer}>
                 {isWhatsAppTrial
-                  ? '• A payment method is required by Google Play to activate the trial\n• No charge is made today\n• Cancel anytime in Google Play before the trial ends'
+                  ? '• Use a supported Google Play method: Visa, Mastercard or Airtel Money\n• M-Pesa Xpress availability depends on Google Play and your Safaricom account\n• No subscription fee today\n• Google may temporarily reserve a small card amount and your bank will release it\n• Cancel anytime in Google Play before the trial ends'
                   : '• 50% discount applied to first 3 billing months\n• Full price resumes from month 4 automatically\n• Cancel anytime from Play Store / App Store'}
               </Text>
             </ScrollView>
@@ -728,6 +730,7 @@ const styles = StyleSheet.create({
   priceContainer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
+    flexWrap: 'wrap',
     marginBottom: 16,
   },
   packagePriceStrike: {
@@ -759,9 +762,8 @@ const styles = StyleSheet.create({
   priceInterval: {
     fontSize: 12,
     color: '#8B9DC3',
-    marginLeft: 4,
-    alignSelf: 'flex-end',
-    marginBottom: 3,
+    width: '100%',
+    marginTop: 2,
   },
   introBanner: {
     flexDirection: 'row',
