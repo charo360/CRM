@@ -790,6 +790,9 @@ async def fix_team_members_index():
     asyncio.create_task(run_automation_scheduler())
     # Scheduled Delegate tasks on a 5-minute cadence (separate from the hourly loop)
     asyncio.create_task(run_delegate_scheduler())
+    # Sends scheduled broadcasts, which nothing used to do, and resumes
+    # any paced send that a restart interrupted.
+    asyncio.create_task(run_broadcast_scheduler())
     # Fix fallback names + backfill last_owner_reply on startup
     async def _startup_tasks():
         await asyncio.sleep(30)
@@ -1781,6 +1784,11 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         "customer_ids": broadcast.customer_ids or None,
         "recipients_count": len(customers),
         "sent_count": 0,
+        # Who this was for, and who has already had it. A paced send to a few
+        # hundred people runs for an hour or more, so it has to survive a
+        # restart -- and resume without messaging anyone twice.
+        "recipient_ids": [c["_id"] for c in customers],
+        "sent_ids": [],
         "status": "scheduled" if broadcast.scheduled_at else "pending",
         "image_url": primary_image_url,
         "image_urls": image_urls,
@@ -1844,12 +1852,156 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         created_at=broadcast_doc["created_at"]
     )
 
+async def _recipients_for(bc: dict) -> list:
+    """The people a stored broadcast was addressed to."""
+    ids = bc.get("recipient_ids")
+    if ids:
+        return await db.customers.find({"_id": {"$in": ids}}).to_list(None)
+    # Broadcasts created before recipient_ids was stored: fall back to the
+    # audience the filter describes now.
+    from customer_audience import audience_query
+    return await db.customers.find(
+        audience_query(bc.get("user_id"), bc.get("filter_type", "all"),
+                       bc.get("customer_ids"))
+    ).to_list(None)
+
+
+async def _start_broadcast_send(bc: dict) -> None:
+    customers = await _recipients_for(bc)
+    asyncio.create_task(send_broadcast_messages(
+        bc["_id"], bc.get("user_id"), bc.get("message", ""), customers,
+        bc.get("image_urls") or ([bc["image_url"]] if bc.get("image_url") else []),
+    ))
+
+
+async def process_due_and_stalled_broadcasts() -> None:
+    """Send broadcasts that are due, and pick up ones that stopped half way.
+
+    Two gaps this closes. Scheduling was offered in the app -- date picker,
+    "Schedule Broadcast" confirmation -- and written to the database with
+    status "scheduled", but nothing ever looked for those rows again, so a
+    scheduled broadcast simply never went out.
+
+    And a paced send now runs for an hour or more, which means a deploy will
+    sometimes land in the middle of one. Whoever was already messaged is
+    recorded as it happens, so resuming carries on from where it stopped
+    rather than starting over.
+    """
+    now = datetime.utcnow()
+
+    # 1. Scheduled, and the time has come. A schedule that lapsed more than a
+    # day ago is not sent late -- the moment it was written for has passed.
+    long_past = now - timedelta(hours=24)
+    await db.broadcasts.update_many(
+        {"status": "scheduled", "scheduled_at": {"$lt": long_past}},
+        {"$set": {"status": "failed", "finished_at": now,
+                  "failure_reason": "scheduled time missed"}},
+    )
+
+    async for bc in db.broadcasts.find(
+        {"status": "scheduled", "scheduled_at": {"$lte": now, "$gte": long_past}}
+    ):
+        # Claim it first. Two web instances run this loop, and both would
+        # otherwise send the same broadcast.
+        claimed = await db.broadcasts.update_one(
+            {"_id": bc["_id"], "status": "scheduled"},
+            {"$set": {"status": "sending", "started_at": now, "progress_at": now}},
+        )
+        if claimed.modified_count != 1:
+            continue
+        logging.info(f"[Broadcast] Sending scheduled broadcast {bc['_id']}")
+        await _start_broadcast_send(bc)
+
+    # 2. Started but gone quiet. A live send touches progress_at every few
+    # seconds, so silence for this long means the task is gone.
+    stale_before = now - timedelta(minutes=15)
+    async for bc in db.broadcasts.find({
+        "status": "sending",
+        "$or": [
+            {"progress_at": {"$lt": stale_before}},
+            {"progress_at": {"$exists": False}, "started_at": {"$lt": stale_before}},
+        ],
+    }):
+        claimed = await db.broadcasts.update_one(
+            {"_id": bc["_id"], "status": "sending",
+             "progress_at": bc.get("progress_at")},
+            {"$set": {"progress_at": now}},
+        )
+        if claimed.modified_count != 1:
+            continue
+        done = len(bc.get("sent_ids") or [])
+        logging.warning(
+            f"[Broadcast] Resuming stalled broadcast {bc['_id']} "
+            f"({done}/{bc.get('recipients_count', '?')} already sent)"
+        )
+        await _start_broadcast_send(bc)
+
+    # 3. Never started at all -- the old queue-with-no-worker case, or a
+    # restart between writing the row and starting the task.
+    #
+    # Only recent ones. There are broadcasts sitting at "pending" from weeks
+    # ago, from when jobs went into a queue nobody consumed, and firing those
+    # off now would send customers a message about something long past with no
+    # one expecting it. Anything older than a day is closed as failed, which is
+    # what it always was.
+    stale_pending = now - timedelta(hours=24)
+    await db.broadcasts.update_many(
+        {"status": "pending", "created_at": {"$lt": stale_pending}},
+        {"$set": {"status": "failed", "finished_at": now,
+                  "failure_reason": "never started"}},
+    )
+
+    async for bc in db.broadcasts.find({
+        "status": "pending",
+        "created_at": {"$lt": now - timedelta(minutes=10), "$gte": stale_pending},
+    }):
+        claimed = await db.broadcasts.update_one(
+            {"_id": bc["_id"], "status": "pending"},
+            {"$set": {"status": "sending", "started_at": now, "progress_at": now}},
+        )
+        if claimed.modified_count != 1:
+            continue
+        logging.warning(f"[Broadcast] Starting never-started broadcast {bc['_id']}")
+        await _start_broadcast_send(bc)
+
+
+async def run_broadcast_scheduler():
+    """Every 5 minutes — send due scheduled broadcasts and resume stalled ones.
+
+    Five minutes rather than the hourly loop so a broadcast scheduled for 9:00
+    does not go out at 9:59.
+    """
+    await asyncio.sleep(20)  # let the server finish starting
+    while True:
+        try:
+            await process_due_and_stalled_broadcasts()
+        except Exception as e:
+            logging.error(f"Broadcast scheduler error: {e}")
+        await asyncio.sleep(300)
+
+
 async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str, customers: list, image_urls: List[str] = []):
-    """Send broadcast to all recipients"""
-    from whatsapp_service import get_whatsapp_service
+    """Send a broadcast, slowly, and survive being interrupted.
+
+    Paced deliberately. Bulk traffic through an unofficial gateway is what gets
+    a number banned, so the run waits between every message and rests after
+    every batch. A few hundred recipients therefore takes an hour or more --
+    that is the intended cost, not a problem to optimise away.
+
+    Because it runs that long it will sometimes be interrupted mid-way by a
+    deploy or a restart. Each delivery is recorded as it happens, so a resumed
+    run skips whoever already has the message. Sending nothing is bad; sending
+    the same person the same broadcast twice is worse.
+    """
+    from whatsapp_service import (
+        get_whatsapp_service, BROADCAST_DELAY,
+        BROADCAST_BATCH_SIZE, BROADCAST_BATCH_REST,
+    )
+    import random as _rnd
+
     whatsapp_service = get_whatsapp_service(db)
 
-    # Normalize relative image URLs to absolute so Evolution API can fetch them
+    # Normalize relative image URLs to absolute so the gateway can fetch them
     server_url = os.environ.get("SERVER_URL", "").rstrip("/")
     def _full_url(url: str) -> str:
         if not url:
@@ -1865,20 +2017,35 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
     # was mid-flight, and the app renders every non-completed status as
     # "Sending...", so it simply span forever.
     await db.broadcasts.update_one(
-        {"_id": broadcast_id, "status": "pending"},
+        {"_id": broadcast_id, "status": {"$in": ["pending", "scheduled"]}},
         {"$set": {"status": "sending", "started_at": datetime.utcnow()}},
     )
 
-    sent_count = 0
+    existing = await db.broadcasts.find_one({"_id": broadcast_id}) or {}
+    already_sent = set(existing.get("sent_ids") or [])
+    if already_sent:
+        logging.info(
+            f"[Broadcast] Resuming {broadcast_id}: "
+            f"{len(already_sent)} of {len(customers)} already delivered"
+        )
+
+    sent_count = len(already_sent)
+    attempted = 0
+
     for customer in customers:
-        bcheck = await db.broadcasts.find_one({"_id": broadcast_id})
+        cid = customer.get("_id")
+        if cid in already_sent:
+            continue
+
+        bcheck = await db.broadcasts.find_one({"_id": broadcast_id}, {"status": 1})
         if bcheck and bcheck.get("status") == "cancelled":
             await db.broadcasts.update_one(
                 {"_id": broadcast_id},
-                {"$set": {"sent_count": sent_count}},
+                {"$set": {"sent_count": sent_count, "finished_at": datetime.utcnow()}},
             )
             return
 
+        delivered = False
         try:
             personalized_message = message.replace("{{name}}", customer.get("name", "there"))
 
@@ -1912,21 +2079,35 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                     send_context="broadcast",
                 )
 
+            delivered = True
             sent_count += 1
         except Exception as e:
-            logging.error(f"Failed to send to {customer['phone_number']}: {e}")
-        
-        # Randomized delay between broadcast recipients
-        from whatsapp_service import BROADCAST_DELAY
-        import random as _rnd
+            logging.error(f"Failed to send to {customer.get('phone_number')}: {e}")
+
+        attempted += 1
+        # Record the delivery before the pause, not after the run. progress_at
+        # is what tells the resumer this send is alive rather than abandoned.
+        update = {"$set": {"sent_count": sent_count, "progress_at": datetime.utcnow()}}
+        if delivered and cid is not None:
+            update["$addToSet"] = {"sent_ids": cid}
+        await db.broadcasts.update_one({"_id": broadcast_id}, update)
+
+        # Wait between people, and rest properly after each batch.
         await asyncio.sleep(_rnd.uniform(*BROADCAST_DELAY))
-    
+        if BROADCAST_BATCH_SIZE and attempted % BROADCAST_BATCH_SIZE == 0:
+            rest = _rnd.uniform(*BROADCAST_BATCH_REST)
+            logging.info(
+                f"[Broadcast] {broadcast_id}: {sent_count}/{len(customers)} sent, "
+                f"resting {rest:.0f}s"
+            )
+            await asyncio.sleep(rest)
+
     # Update broadcast status (do not overwrite cancelled)
-    fin = await db.broadcasts.find_one({"_id": broadcast_id})
+    fin = await db.broadcasts.find_one({"_id": broadcast_id}, {"status": 1})
     if fin and fin.get("status") == "cancelled":
         await db.broadcasts.update_one(
             {"_id": broadcast_id},
-            {"$set": {"sent_count": sent_count}},
+            {"$set": {"sent_count": sent_count, "finished_at": datetime.utcnow()}},
         )
     else:
         # A broadcast where every single send failed is not "Sent". Sends fail

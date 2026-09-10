@@ -26,8 +26,18 @@ WHATSAPP_PROVIDER: str = os.environ.get("WHATSAPP_PROVIDER", "waha").strip().low
 # Human-like pacing is the single most important anti-ban measure for bulk
 # sending through an unofficial gateway. Tunable via env without a deploy.
 BROADCAST_DELAY: tuple = (
-    float(os.environ.get("BROADCAST_DELAY_MIN", "3.0")),
-    float(os.environ.get("BROADCAST_DELAY_MAX", "8.0")),
+    float(os.environ.get("BROADCAST_DELAY_MIN", "4.0")),
+    float(os.environ.get("BROADCAST_DELAY_MAX", "12.0")),
+)
+
+# A steady drip is still a machine. Real people send a handful of messages and
+# then stop for a while, so the run rests after every batch. This is what keeps
+# a few hundred sends from looking like bulk traffic; the broadcast taking an
+# hour is the point, not a cost.
+BROADCAST_BATCH_SIZE: int = int(os.environ.get("BROADCAST_BATCH_SIZE", "20"))
+BROADCAST_BATCH_REST: tuple = (
+    float(os.environ.get("BROADCAST_BATCH_REST_MIN", "60.0")),
+    float(os.environ.get("BROADCAST_BATCH_REST_MAX", "180.0")),
 )
 
 # Daily send throttle (monthly caps enforced via entitlements)
