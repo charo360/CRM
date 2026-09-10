@@ -183,3 +183,71 @@ def test_a_long_missed_schedule_is_not_sent_late():
         "stale scheduled and never-started broadcasts must be closed as failed, "
         "not fired off unexpectedly at whoever is in the audience now"
     )
+
+
+# ------------------------------------------- believing what the send returns
+
+def test_send_status_reads_the_result_not_the_absence_of_an_exception():
+    import server
+
+    assert server._send_status({"status": "success"}) == "ok"
+    assert server._send_status({"status": "error", "message": "x"}) == "error"
+    assert server._send_status({"status": "limit_reached"}) == "limit_reached"
+    # Older shapes that just return an id, and anything unrecognised, count
+    # as sent rather than silently dropping people.
+    assert server._send_status({"id": "abc"}) == "ok"
+    assert server._send_status(None) == "ok"
+
+
+class ScriptedWhatsApp:
+    def __init__(self, script):
+        self.script = list(script)
+        self.sent = []
+
+    async def send_message(self, user_id, to_number, message, **kw):
+        self.sent.append(to_number)
+        return self.script.pop(0) if self.script else {"status": "success"}
+
+
+def _run_scripted(broadcast, customers, script, monkeypatch):
+    import server
+
+    wa = ScriptedWhatsApp(script)
+    db = FakeDB(broadcast)
+    monkeypatch.setattr(server, "db", db)
+    monkeypatch.setattr(ws, "get_whatsapp_service", lambda _db: wa)
+    asyncio.run(server.send_broadcast_messages(
+        broadcast["_id"], broadcast["user_id"], broadcast["message"], customers, []))
+    return wa, db.broadcasts.docs[broadcast["_id"]]
+
+
+def test_a_message_the_gateway_refuses_is_not_counted_as_delivered(fast_pacing, monkeypatch):
+    """It returns {"status": "error"} rather than raising."""
+    wa, final = _run_scripted(
+        _broadcast(), _customers(4),
+        [{"status": "success"}, {"status": "error", "message": "not accepted"},
+         {"status": "success"}, {"status": "success"}],
+        monkeypatch)
+
+    assert final["sent_count"] == 3
+    assert final["failed_count"] == 1
+    assert "c1" not in final["sent_ids"], (
+        "a refused message must not go into sent_ids, or a resume will skip "
+        "that person forever"
+    )
+
+
+def test_running_out_of_allowance_pauses_rather_than_burning_the_list(fast_pacing, monkeypatch):
+    """The plan's daily cap stops a send; the rest must stay unsent."""
+    wa, final = _run_scripted(
+        _broadcast(), _customers(6),
+        [{"status": "success"}, {"status": "success"},
+         {"status": "limit_reached", "message": "Daily limit of 500 messages reached."}],
+        monkeypatch)
+
+    assert final["status"] == "paused"
+    assert final["paused_reason"] == "Daily limit of 500 messages reached."
+    assert len(wa.sent) == 3, "it should stop at the cap, not attempt everyone"
+    assert final["sent_ids"] == ["c0", "c1"], (
+        "only the two that actually went out may be recorded as delivered"
+    )

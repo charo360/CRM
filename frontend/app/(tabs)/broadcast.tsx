@@ -252,12 +252,20 @@ export default function BroadcastScreen() {
       case 'cancelled': return 'Stopped';
       case 'scheduled': return 'Scheduled';
       case 'pending': return 'Queued';
+      // Ran out of plan allowance part way. It resumes on its own when the
+      // daily allowance resets, so this is not a dead end.
+      case 'paused': return 'Paused - limit reached';
       default: return 'Sending...';
     }
   };
 
   const isFinished = (status?: string) =>
     status === 'completed' || status === 'failed' || status === 'cancelled';
+
+  // Paused counts as in flight: the scheduler picks it up again when the
+  // allowance resets, so the screen should keep watching it.
+  const isInFlight = (status?: string) =>
+    status === 'sending' || status === 'pending' || status === 'paused';
 
   const getFilteredCount = () => {
     if (selectedFilter === 'all') return customers.length;
@@ -963,7 +971,7 @@ export default function BroadcastScreen() {
                     )}
                   </View>
                   <View style={styles.statusRow}>
-                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, item.status === 'sending' && styles.statusSending, (item.status === 'failed' || item.status === 'cancelled') && styles.statusFailed]}>
+                    <View style={[styles.statusBadge, item.status === 'completed' && styles.statusCompleted, isInFlight(item.status) && styles.statusSending, (item.status === 'failed' || item.status === 'cancelled') && styles.statusFailed]}>
                       <Text style={styles.statusText}>{statusLabel(item.status)}</Text>
                     </View>
                     <Text style={styles.recipientCount}>{item.sent_count}/{item.recipients_count} delivered</Text>

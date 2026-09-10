@@ -1885,6 +1885,24 @@ async def create_broadcast(broadcast: BroadcastCreate, background_tasks: Backgro
         created_at=broadcast_doc["created_at"]
     )
 
+def _send_status(result) -> str:
+    """What actually happened to one send.
+
+    send_message signals failure by returning a status rather than raising:
+    "limit_reached" when the plan's daily or monthly allowance is spent, and
+    "error" when the gateway would not accept the message. Anything else --
+    including the older shapes that just return an id -- counts as sent.
+    """
+    if not isinstance(result, dict):
+        return "ok"
+    status = result.get("status")
+    if status == "limit_reached":
+        return "limit_reached"
+    if status == "error":
+        return "error"
+    return "ok"
+
+
 async def _recipients_for(bc: dict) -> list:
     """The people a stored broadcast was addressed to."""
     ids = bc.get("recipient_ids")
@@ -1945,7 +1963,19 @@ async def process_due_and_stalled_broadcasts() -> None:
         logging.info(f"[Broadcast] Sending scheduled broadcast {bc['_id']}")
         await _start_broadcast_send(bc)
 
-    # 2. Started but gone quiet. A live send touches progress_at every few
+    # 2a. Paused because the plan's daily or monthly allowance ran out. Try
+    # again: the daily allowance resets, and a top-up can arrive at any time.
+    # A retry that is still over the limit re-pauses after one call.
+    async for bc in db.broadcasts.find({"status": "paused"}):
+        claimed = await db.broadcasts.update_one(
+            {"_id": bc["_id"], "status": "paused"},
+            {"$set": {"status": "sending", "progress_at": now}},
+        )
+        if claimed.modified_count != 1:
+            continue
+        await _start_broadcast_send(bc)
+
+    # 2b. Started but gone quiet. A live send touches progress_at every few
     # seconds, so silence for this long means the task is gone.
     stale_before = now - timedelta(minutes=15)
     async for bc in db.broadcasts.find({
@@ -2084,7 +2114,7 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
             if resolved_images:
                 # First image carries the caption
-                await whatsapp_service.send_message(
+                result = await whatsapp_service.send_message(
                     user_id=user_id,
                     to_number=customer["phone_number"],
                     message=personalized_message,
@@ -2092,19 +2122,21 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                     media_url=resolved_images[0],
                     send_context="broadcast",
                 )
-                # Remaining images — no caption (gallery style)
-                for img_url in resolved_images[1:]:
-                    await whatsapp_service.send_message(
-                        user_id=user_id,
-                        to_number=customer["phone_number"],
-                        message="",
-                        customer_name=customer.get("name"),
-                        media_url=img_url,
-                        send_context="broadcast",
-                    )
+                # Remaining images — no caption (gallery style). Their outcome
+                # does not change whether this person got the broadcast.
+                if _send_status(result) == "ok":
+                    for img_url in resolved_images[1:]:
+                        await whatsapp_service.send_message(
+                            user_id=user_id,
+                            to_number=customer["phone_number"],
+                            message="",
+                            customer_name=customer.get("name"),
+                            media_url=img_url,
+                            send_context="broadcast",
+                        )
             else:
                 # Text-only broadcast
-                await whatsapp_service.send_message(
+                result = await whatsapp_service.send_message(
                     user_id=user_id,
                     to_number=customer["phone_number"],
                     message=personalized_message,
@@ -2112,8 +2144,35 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
                     send_context="broadcast",
                 )
 
-            delivered = True
-            sent_count += 1
+            # send_message reports failure by returning a status, not by
+            # raising. Counting "no exception" as delivered marked blocked and
+            # rejected sends as delivered -- and, worse, wrote those people
+            # into sent_ids, so a resume would skip them forever.
+            outcome = _send_status(result)
+            if outcome == "limit_reached":
+                logging.warning(
+                    f"[Broadcast] {broadcast_id} paused: "
+                    f"{(result or {}).get('message', 'send limit reached')}"
+                )
+                await db.broadcasts.update_one(
+                    {"_id": broadcast_id},
+                    {"$set": {
+                        "status": "paused",
+                        "sent_count": sent_count,
+                        "progress_at": datetime.utcnow(),
+                        "paused_reason": (result or {}).get("message")
+                                         or "Send limit reached",
+                    }},
+                )
+                return
+            if outcome == "ok":
+                delivered = True
+                sent_count += 1
+            else:
+                logging.error(
+                    f"Failed to send to {customer.get('phone_number')}: "
+                    f"{(result or {}).get('message')}"
+                )
         except Exception as e:
             logging.error(f"Failed to send to {customer.get('phone_number')}: {e}")
 
