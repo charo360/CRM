@@ -339,7 +339,11 @@ class EmailContactClassifier:
                 return ""
             parts = []
             name = user.get("business_name") or user.get("name") or ""
-            btype = user.get("business_type") or ""
+            # The type lives in settings; the top-level field is None on
+            # every real account, so reading only that gave the model no
+            # idea what the business sells.
+            btype = ((user.get("settings") or {}).get("business_type")
+                     or user.get("business_type") or "")
             if name:
                 parts.append(f"Business: {name}")
             if btype:

@@ -8869,7 +8869,12 @@ async def generate_broadcast_message(request: AIMessageRequest, user = Depends(g
         drafter = get_drafter()
         generated_message = await drafter.draft_broadcast_message(
             prompt=request.prompt,
-            business_type=request.business_type or user.get("business_type"),
+            # The three composers other than the main one send no type at
+            # all, and the top-level field is None on every real account,
+            # so without settings the model was told "a business".
+            business_type=(request.business_type
+                           or (user.get("settings") or {}).get("business_type")
+                           or user.get("business_type")),
             business_name=user.get("business_name") or "",
             # Free plans can only hold "standard", so this cannot reach a paid
             # model on its own.
