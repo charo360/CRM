@@ -208,6 +208,10 @@ export default function SalesScreen() {
   const scrollFormToEnd = useCallback(() => {
     setTimeout(() => formScrollRef.current?.scrollToEnd({ animated: true }), 150);
   }, []);
+  const paymentScrollRef = useRef<ScrollView>(null);
+  const scrollPaymentToEnd = useCallback(() => {
+    setTimeout(() => paymentScrollRef.current?.scrollToEnd({ animated: true }), 150);
+  }, []);
 
   // Status writes are optimistic; this tracks which order+field is still in flight
   const [savingStatusFor, setSavingStatusFor] = useState<string | null>(null);
@@ -1278,7 +1282,7 @@ export default function SalesScreen() {
 
           <KeyboardAvoidingView
             style={styles.keyboardView}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
           >
           <ScrollView
             ref={formScrollRef}
@@ -2250,7 +2254,14 @@ export default function SalesScreen() {
             <View style={{ width: 60 }} />
           </View>
 
-          <ScrollView style={styles.modalContent} keyboardShouldPersistTaps="handled">
+          <KeyboardAvoidingView style={styles.keyboardView} behavior="padding">
+
+          <ScrollView
+            ref={paymentScrollRef}
+            style={styles.modalContent}
+            contentContainerStyle={styles.modalContentInner}
+            keyboardShouldPersistTaps="handled"
+          >
             <Text style={styles.settingsHint}>
               Add your payment details so customers know exactly how to pay you
             </Text>
@@ -2328,6 +2339,7 @@ export default function SalesScreen() {
                   style={styles.pmInput}
                   value={newMethodName || customMethodName}
                   onChangeText={(t) => { setCustomMethodName(t); setNewMethodName(''); }}
+                  onFocus={scrollPaymentToEnd}
                   placeholder="e.g. Chipper Cash, Wave, Venmo..."
                   placeholderTextColor="#555"
                 />
@@ -2346,6 +2358,7 @@ export default function SalesScreen() {
                   style={styles.pmInput}
                   value={newMethodDetails}
                   onChangeText={setNewMethodDetails}
+                  onFocus={scrollPaymentToEnd}
                   placeholder={
                     newMethodName === 'M-Pesa' || newMethodName === 'Airtel Money' ? 'e.g. 0712 345 678' :
                     newMethodName === 'PayPal' ? 'e.g. payments@youremail.com' :
@@ -2397,6 +2410,7 @@ export default function SalesScreen() {
               </TouchableOpacity>
             )}
           </ScrollView>
+          </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
     </SafeAreaView>
