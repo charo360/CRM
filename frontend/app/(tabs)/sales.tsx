@@ -211,6 +211,9 @@ export default function SalesScreen() {
   const [savingStatusFor, setSavingStatusFor] = useState<string | null>(null);
   const statusTokenRef = useRef<Record<string, number>>({});
 
+  // The order waiting on "how did they pay?" before it can be marked Paid
+  const [payMethodPromptFor, setPayMethodPromptFor] = useState<Order | null>(null);
+
   useEffect(() => {
     const loadCurrency = async () => {
       try {
@@ -429,10 +432,13 @@ export default function SalesScreen() {
   // Apply the new status straight away, then confirm it with the server. Marking an
   // order Paid also books a sale and fires a WhatsApp confirmation, so the round-trip
   // can take a few seconds - waiting on it made the buttons feel dead.
-  const updateOrderStatus = useCallback(
-    async (order: Order, field: 'payment_status' | 'delivery_status', status: string) => {
-      if (order[field] === status) return;
-
+  const applyOrderStatus = useCallback(
+    async (
+      order: Order,
+      field: 'payment_status' | 'delivery_status',
+      status: string,
+      paymentMethod?: string,
+    ) => {
       const key = `${order.id}:${field}`;
       const token = (statusTokenRef.current[key] || 0) + 1;
       statusTokenRef.current[key] = token;
@@ -445,10 +451,12 @@ export default function SalesScreen() {
       applyToOrder({ ...order, [field]: status } as Order);
       setSavingStatusFor(key);
 
+      const query = paymentMethod
+        ? `${field}=${encodeURIComponent(status)}&payment_method=${encodeURIComponent(paymentMethod)}`
+        : `${field}=${encodeURIComponent(status)}`;
+
       try {
-        const response = await apiClient.put(
-          `/orders/${order.id}?${field}=${encodeURIComponent(status)}`
-        );
+        const response = await apiClient.put(`/orders/${order.id}?${query}`);
         // A newer tap already superseded this one - don't let a stale reply win
         if (statusTokenRef.current[key] !== token) return;
         applyToOrder(response.data);
@@ -464,6 +472,28 @@ export default function SalesScreen() {
       }
     },
     []
+  );
+
+  // Marking an order Paid is the moment the sale gets booked, so it is the only
+  // moment the payment method can still be recorded - after this the sale exists
+  // and its method is fixed. Every other status is a straight one-tap write.
+  const updateOrderStatus = useCallback(
+    (order: Order, field: 'payment_status' | 'delivery_status', status: string) => {
+      if (order[field] === status) return;
+
+      if (field === 'payment_status' && status === 'Paid') {
+        // Nothing to choose between when only one method is set up
+        if (paymentMethods.length <= 1) {
+          applyOrderStatus(order, field, status, paymentMethods[0]?.name || 'Cash');
+          return;
+        }
+        setPayMethodPromptFor(order);
+        return;
+      }
+
+      applyOrderStatus(order, field, status);
+    },
+    [paymentMethods, applyOrderStatus]
   );
 
   // One tap converts. The order is already Paid to get here, which means the sale
@@ -2084,6 +2114,57 @@ export default function SalesScreen() {
         </SafeAreaView>
       </Modal>
 
+      {/* "How did they pay?" - asked only when marking an order Paid, because that
+           is when the sale is booked and the method stops being changeable */}
+      <Modal
+        visible={!!payMethodPromptFor}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setPayMethodPromptFor(null)}
+      >
+        <View style={styles.payPromptOverlay}>
+          <View style={styles.payPromptCard}>
+            <Text style={styles.payPromptTitle}>How did they pay?</Text>
+            <Text style={styles.payPromptSubtitle}>
+              This is recorded on the sale and shown in your reports.
+            </Text>
+
+            <ScrollView style={styles.payPromptList} bounces={false}>
+              {paymentMethods.map((method) => (
+                <TouchableOpacity
+                  key={method.name}
+                  style={styles.payPromptOption}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    const order = payMethodPromptFor;
+                    setPayMethodPromptFor(null);
+                    if (order) applyOrderStatus(order, 'payment_status', 'Paid', method.name);
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.payPromptOptionText}>{method.name}</Text>
+                    {!!method.details && (
+                      <Text style={styles.payPromptOptionDetails} numberOfLines={1}>
+                        {method.details}
+                      </Text>
+                    )}
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#4A5A72" />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={styles.payPromptCancel}
+              activeOpacity={0.7}
+              onPress={() => setPayMethodPromptFor(null)}
+            >
+              <Text style={styles.payPromptCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       {/* Payment Method Settings Modal */}
       <Modal
         visible={paymentSettingsVisible}
@@ -2654,6 +2735,64 @@ const styles = StyleSheet.create({
   },
   keyboardView: {
     flex: 1,
+  },
+  payPromptOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  payPromptCard: {
+    backgroundColor: '#111F35',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: '#1A2942',
+  },
+  payPromptTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  payPromptSubtitle: {
+    fontSize: 13,
+    color: '#888',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  payPromptList: {
+    maxHeight: 280,
+  },
+  payPromptOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#1A2942',
+    borderWidth: 1,
+    borderColor: '#2A3952',
+    marginBottom: 8,
+  },
+  payPromptOptionText: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#FFFFFF',
+  },
+  payPromptOptionDetails: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 2,
+  },
+  payPromptCancel: {
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  payPromptCancelText: {
+    fontSize: 15,
+    color: '#888',
   },
   modalContent: {
     padding: 20,
