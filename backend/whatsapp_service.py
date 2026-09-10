@@ -26,19 +26,55 @@ WHATSAPP_PROVIDER: str = os.environ.get("WHATSAPP_PROVIDER", "waha").strip().low
 # Human-like pacing is the single most important anti-ban measure for bulk
 # sending through an unofficial gateway. Tunable via env without a deploy.
 BROADCAST_DELAY: tuple = (
-    float(os.environ.get("BROADCAST_DELAY_MIN", "4.0")),
-    float(os.environ.get("BROADCAST_DELAY_MAX", "12.0")),
+    float(os.environ.get("BROADCAST_DELAY_MIN", "15.0")),
+    float(os.environ.get("BROADCAST_DELAY_MAX", "75.0")),
 )
 
-# A steady drip is still a machine. Real people send a handful of messages and
-# then stop for a while, so the run rests after every batch. This is what keeps
-# a few hundred sends from looking like bulk traffic; the broadcast taking an
-# hour is the point, not a cost.
-BROADCAST_BATCH_SIZE: int = int(os.environ.get("BROADCAST_BATCH_SIZE", "20"))
-BROADCAST_BATCH_REST: tuple = (
-    float(os.environ.get("BROADCAST_BATCH_REST_MIN", "60.0")),
-    float(os.environ.get("BROADCAST_BATCH_REST_MAX", "180.0")),
+# Somebody typing these one at a time does not keep a steady rhythm. They send
+# a few, then something else takes their attention. So roughly one gap in six
+# is a long one, up to five minutes, rather than the same tempo throughout.
+BROADCAST_LONG_PAUSE_CHANCE: float = float(
+    os.environ.get("BROADCAST_LONG_PAUSE_CHANCE", "0.17")
 )
+BROADCAST_LONG_PAUSE: tuple = (
+    float(os.environ.get("BROADCAST_LONG_PAUSE_MIN", "120.0")),
+    float(os.environ.get("BROADCAST_LONG_PAUSE_MAX", "300.0")),
+)
+
+# And a proper break every so often. The batch size is itself randomised: a
+# rest after exactly every 20 messages, every time, is its own giveaway.
+BROADCAST_BATCH_SIZE: int = int(os.environ.get("BROADCAST_BATCH_SIZE", "18"))
+BROADCAST_BATCH_JITTER: int = int(os.environ.get("BROADCAST_BATCH_JITTER", "6"))
+BROADCAST_BATCH_REST: tuple = (
+    float(os.environ.get("BROADCAST_BATCH_REST_MIN", "180.0")),
+    float(os.environ.get("BROADCAST_BATCH_REST_MAX", "420.0")),
+)
+
+
+def next_send_gap(_random=None) -> float:
+    """How long to wait before sending the next message of a broadcast.
+
+    Mostly under a minute, occasionally a few minutes -- the shape of someone
+    working through a list by hand rather than a machine emitting on a timer.
+    """
+    import random as _r
+
+    rnd = _random or _r
+    if BROADCAST_LONG_PAUSE_CHANCE and rnd.random() < BROADCAST_LONG_PAUSE_CHANCE:
+        return rnd.uniform(*BROADCAST_LONG_PAUSE)
+    return rnd.uniform(*BROADCAST_DELAY)
+
+
+def next_batch_size(_random=None) -> int:
+    """How many to send before taking a proper break, varied each time."""
+    import random as _r
+
+    rnd = _random or _r
+    if not BROADCAST_BATCH_SIZE:
+        return 0
+    low = max(1, BROADCAST_BATCH_SIZE - BROADCAST_BATCH_JITTER)
+    high = BROADCAST_BATCH_SIZE + BROADCAST_BATCH_JITTER
+    return rnd.randint(low, high)
 
 # Daily send throttle (monthly caps enforced via entitlements)
 _DAILY_SEND_LIMITS: Dict[str, int] = {

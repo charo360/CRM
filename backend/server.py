@@ -2056,10 +2056,8 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
     run skips whoever already has the message. Sending nothing is bad; sending
     the same person the same broadcast twice is worse.
     """
-    from whatsapp_service import (
-        get_whatsapp_service, BROADCAST_DELAY,
-        BROADCAST_BATCH_SIZE, BROADCAST_BATCH_REST,
-    )
+    import whatsapp_service as _ws
+    from whatsapp_service import get_whatsapp_service
     import random as _rnd
 
     whatsapp_service = get_whatsapp_service(db)
@@ -2094,6 +2092,9 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
     sent_count = len(already_sent)
     attempted = 0
+    # Varied each time; a break after exactly every 20, every run, is its own
+    # signature.
+    batch_target = _ws.next_batch_size()
 
     for customer in customers:
         cid = customer.get("_id")
@@ -2184,15 +2185,18 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
             update["$addToSet"] = {"sent_ids": cid}
         await db.broadcasts.update_one({"_id": broadcast_id}, update)
 
-        # Wait between people, and rest properly after each batch.
-        await asyncio.sleep(_rnd.uniform(*BROADCAST_DELAY))
-        if BROADCAST_BATCH_SIZE and attempted % BROADCAST_BATCH_SIZE == 0:
-            rest = _rnd.uniform(*BROADCAST_BATCH_REST)
+        # Wait between people, and take a proper break every so often. Read
+        # from the module rather than bound at import, so the pacing can be
+        # retuned by environment variable without a code change.
+        await asyncio.sleep(_ws.next_send_gap())
+        if batch_target and attempted % batch_target == 0:
+            rest = _rnd.uniform(*_ws.BROADCAST_BATCH_REST)
             logging.info(
                 f"[Broadcast] {broadcast_id}: {sent_count}/{len(customers)} sent, "
                 f"resting {rest:.0f}s"
             )
             await asyncio.sleep(rest)
+            batch_target = _ws.next_batch_size()
 
     # Update broadcast status (do not overwrite cancelled)
     fin = await db.broadcasts.find_one({"_id": broadcast_id}, {"status": 1})

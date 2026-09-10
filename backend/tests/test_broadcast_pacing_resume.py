@@ -36,6 +36,28 @@ def test_the_run_rests_between_batches():
     assert rest_low > ws.BROADCAST_DELAY[1]
 
 
+def test_the_rhythm_is_not_a_metronome():
+    """A constant tempo, and a break after exactly every N, are both tells."""
+    gaps = [ws.next_send_gap() for _ in range(400)]
+    assert min(gaps) >= ws.BROADCAST_DELAY[0]
+    assert max(gaps) <= ws.BROADCAST_LONG_PAUSE[1]
+
+    long_ones = [g for g in gaps if g >= ws.BROADCAST_LONG_PAUSE[0]]
+    assert long_ones, "no long pauses at all - the tempo never varies"
+    # Long enough to break the rhythm, rare enough not to stall the run.
+    assert 0.02 < len(long_ones) / len(gaps) < 0.45
+
+    sizes = {ws.next_batch_size() for _ in range(200)}
+    assert len(sizes) > 1, "the break lands after exactly the same count every time"
+
+
+def test_a_person_could_plausibly_send_at_this_rate():
+    """Nothing here should be faster than someone typing them by hand."""
+    assert ws.BROADCAST_DELAY[0] >= 10, (
+        "under ten seconds apart, sustained, is not a person sending messages"
+    )
+
+
 # ------------------------------------------------------- a tiny fake Mongo
 
 class FakeCollection:
@@ -84,8 +106,17 @@ def _customers(n):
 
 @pytest.fixture
 def fast_pacing(monkeypatch):
+    """Remove every wait, including the occasional long one.
+
+    Missing the long pause here made the suite hang for minutes rather than
+    fail: the send loop still rolled a 2-5 minute wait on roughly one message
+    in six.
+    """
     monkeypatch.setattr(ws, "BROADCAST_DELAY", (0, 0))
+    monkeypatch.setattr(ws, "BROADCAST_LONG_PAUSE_CHANCE", 0.0)
+    monkeypatch.setattr(ws, "BROADCAST_LONG_PAUSE", (0, 0))
     monkeypatch.setattr(ws, "BROADCAST_BATCH_SIZE", 0)
+    monkeypatch.setattr(ws, "BROADCAST_BATCH_JITTER", 0)
     monkeypatch.setattr(ws, "BROADCAST_BATCH_REST", (0, 0))
 
 
