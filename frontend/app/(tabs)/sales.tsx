@@ -1463,7 +1463,12 @@ export default function SalesScreen() {
                 {/* Expense Category Selection */}
                 <View style={styles.formGroup}>
                   <Text style={styles.formLabel}>Category *</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.categoryScroll}
+                    keyboardShouldPersistTaps="handled"
+                  >
                     {EXPENSE_CATEGORIES.map((cat) => (
                       <TouchableOpacity
                         key={cat}
