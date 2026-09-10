@@ -1239,8 +1239,20 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             return {"status": "limit_reached", "message": "Subscribe or start a free trial to send WhatsApp messages."}
         if limits.get("monthly_remaining", 0) <= 0 and limits.get("monthly_limit", 0) > 0:
             return {"status": "limit_reached", "message": f"Monthly limit of {limits['monthly_limit']:,} messages reached. Upgrade your plan."}
+        from whatsapp_service import BULK_SEND_CONTEXTS
         if limits.get("remaining", 0) <= 0:
             return {"status": "limit_reached", "message": f"Daily limit of {limits['daily_limit']} messages reached."}
+        if send_context in BULK_SEND_CONTEXTS and limits.get("bulk_remaining", 1) <= 0:
+            # Fan-out only. A reply to somebody who messaged first is never held
+            # back by this.
+            return {
+                "status": "limit_reached",
+                "message": (
+                    f"A newly connected number can send {limits.get('bulk_limit')} "
+                    "broadcast messages a day while it settles in. The allowance "
+                    "rises each day for its first week."
+                ),
+            }
 
         destination = str(to_number or "").strip()
         destination_is_lid = _is_lid_jid(destination)

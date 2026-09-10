@@ -2111,7 +2111,16 @@ async def send_broadcast_messages(broadcast_id: str, user_id: str, message: str,
 
         delivered = False
         try:
-            personalized_message = message.replace("{{name}}", customer.get("name", "there"))
+            # Each copy is its own message. An identical string sent to every
+            # recipient is the easiest thing to match on, and a stronger signal
+            # than any gap between sends. Where the owner has not personalised
+            # it themselves and we know the person's real name, the greeting
+            # carries their name; where we have only "Contact 3434", the text
+            # goes out exactly as written.
+            from broadcast_variation import personalise
+            personalized_message = personalise(
+                message, customer, seed=f"{broadcast_id}:{cid}"
+            ).replace("{{name}}", customer.get("name", "there"))
 
             if resolved_images:
                 # First image carries the caption

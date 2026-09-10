@@ -94,6 +94,11 @@ _DAILY_SEND_LIMITS: Dict[str, int] = {
 UNBILLED_OWNER_CONTEXTS = {"digest", "motivation", "zilo_morning_briefing"}
 
 
+# Messages the business starts, sent to many people at once. These are what a
+# newly linked number is held back on; a reply to an inbound message is not.
+BULK_SEND_CONTEXTS = {"broadcast", "product_send"}
+
+
 def _same_number(a, b) -> bool:
     """True when two phone numbers are the same line, however they are written."""
     da = "".join(ch for ch in str(a or "") if ch.isdigit())
@@ -566,6 +571,25 @@ class WhatsAppService:
                 "direction": "outgoing",
                 "created_at": {"$gte": today},
             })
+
+            # A number linked an hour ago pushing out a few hundred messages is
+            # the shape of a throwaway bought for bulk sending, and the case
+            # least likely to survive. Its fan-out ramps over the first week.
+            #
+            # Fan-out only. Replying to somebody who messaged first is the
+            # safest thing this product does, and counting those against a
+            # warm-up ceiling would silence the auto-reply on exactly the
+            # accounts that just connected -- this business had already sent 43
+            # messages in a day, nearly all of them replies.
+            from warmup_limits import effective_daily_cap
+            _linked_at = ((user or {}).get("whatsapp") or {}).get("connected_at")
+            bulk_daily_cap = effective_daily_cap(daily_cap, _linked_at)
+            bulk_daily_sent = await self.db.messages.count_documents({
+                "user_id": business_id,
+                "direction": "outgoing",
+                "send_context": {"$in": list(BULK_SEND_CONTEXTS)},
+                "created_at": {"$gte": today},
+            })
             usage = ent.get("usage") or {}
             # The model the owner picked decides what one reply costs against
             # the plan; read here so send_message need not fetch the user again.
@@ -583,6 +607,8 @@ class WhatsAppService:
                 "sent": daily_sent,
                 "limit": daily_cap,
                 "remaining": max(0, daily_cap - daily_sent),
+                "bulk_limit": bulk_daily_cap,
+                "bulk_remaining": max(0, bulk_daily_cap - bulk_daily_sent),
                 "daily_sent": daily_sent,
                 "daily_limit": daily_cap,
                 "monthly_sent": monthly_sent,
@@ -632,6 +658,17 @@ class WhatsAppService:
                 return {
                     "status": "limit_reached",
                     "message": f"Daily limit of {limits['daily_limit']} messages reached.",
+                }
+            if send_context in BULK_SEND_CONTEXTS and limits.get("bulk_remaining", 1) <= 0:
+                # Fan-out only. A reply to somebody who messaged first is never held
+                # back by this.
+                return {
+                    "status": "limit_reached",
+                    "message": (
+                        f"A newly connected number can send {limits.get('bulk_limit')} "
+                        "broadcast messages a day while it settles in. The allowance "
+                        "rises each day for its first week."
+                    ),
                 }
 
             # Find or create customer
