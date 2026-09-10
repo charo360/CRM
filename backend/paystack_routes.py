@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import os
+from datetime import datetime
 from typing import Callable
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
@@ -84,6 +85,30 @@ def _parse_subaccount_payload(body: dict) -> dict:
         "account_number": account_number,
         "business_name": business_name,
     }
+
+
+async def _record_connect_failure(db, user: dict, stage: str, message: str) -> None:
+    """Keep why a payout setup failed, so it can be answered later.
+
+    A merchant who cannot connect sees a one-line alert and nothing is written
+    down anywhere. Supporting that means asking them to reproduce it and read
+    the message back, which is a poor way to treat somebody who has already
+    failed to do the thing they wanted.
+
+    Only the reason and the stage. Never the account number, and never a
+    secret key.
+    """
+    try:
+        await db.users.update_one(
+            user_id_filter(business_owner_id(user)),
+            {"$set": {"paystack_last_error": {
+                "stage": stage,
+                "message": (message or "")[:400],
+                "at": datetime.utcnow(),
+            }}},
+        )
+    except Exception:
+        logger.warning("[Paystack] could not record connect failure", exc_info=True)
 
 
 def _require_payments_manager(user: dict) -> None:
@@ -313,8 +338,10 @@ def register_paystack_routes(
                 fields = parse_connect_body(body)
                 secret = fields["paystack_secret_key"]
         except ValueError as e:
+            await _record_connect_failure(db, user, "details", str(e))
             raise HTTPException(status_code=400, detail=str(e)) from e
         except PaystackApiError as e:
+            await _record_connect_failure(db, user, "paystack", str(e))
             raise HTTPException(status_code=502, detail=str(e)) from e
 
         if not secret:
