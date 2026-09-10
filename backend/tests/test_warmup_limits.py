@@ -106,3 +106,85 @@ def test_both_senders_enforce_the_fan_out_ceiling(path, fn):
         f"{path}:{fn} does not check the warm-up ceiling, so a newly linked "
         "number can still fan out freely through it"
     )
+
+
+# ------------------------------------------- what the owner is shown
+
+class _FakeMessages:
+    def __init__(self, n):
+        self.n = n
+
+    async def count_documents(self, q):
+        return self.n
+
+
+class _FakeDB:
+    def __init__(self, n=0):
+        self.messages = _FakeMessages(n)
+
+
+def test_a_settled_number_is_told_nothing():
+    """No notice once the ramp is over, and no extra query to produce it."""
+    import asyncio
+
+    from warmup_limits import warmup_status
+
+    user = {"_id": "u", "whatsapp": {"connected_at": _linked(30)}}
+    assert asyncio.run(warmup_status(_FakeDB(), user, 500, NOW)) is None
+
+    # Nor for an account whose link date predates the field.
+    assert asyncio.run(warmup_status(_FakeDB(), {"_id": "u"}, 500, NOW)) is None
+
+
+def test_the_notice_says_what_is_left_and_when_it_lifts():
+    import asyncio
+
+    from warmup_limits import warmup_status
+
+    user = {"_id": "u", "whatsapp": {"connected_at": _linked(0)}}
+    st = asyncio.run(warmup_status(_FakeDB(4), user, 500, NOW))
+
+    assert st["active"] is True
+    assert st["daily_limit"] == WARMUP_SCHEDULE[0][1]
+    assert st["sent_today"] == 4
+    assert st["remaining"] == st["daily_limit"] - 4
+    assert st["next_limit"] > st["daily_limit"], "it must be going up, not flat"
+    assert st["full_limit"] == 500
+    assert st["days_until_full"] >= 1
+    # The owner has to be told replies are unaffected, or the limit reads as
+    # "my WhatsApp is broken".
+    assert "eplies" in st["reason"]
+
+
+def test_the_notice_never_promises_more_than_the_plan_allows():
+    """A free plan on day six still sees fifty, not one hundred and eighty."""
+    import asyncio
+
+    from warmup_limits import warmup_status
+
+    user = {"_id": "u", "whatsapp": {"connected_at": _linked(5)}}
+    st = asyncio.run(warmup_status(_FakeDB(0), user, 50, NOW))
+    assert st["daily_limit"] <= 50
+    assert st["next_limit"] <= 50
+    assert st["full_limit"] == 50
+
+
+def test_a_send_stopped_by_the_ramp_is_paused_not_failed():
+    """The notice promises the rest continues tomorrow; that must be true."""
+    import ast
+    from pathlib import Path
+
+    src = (BACKEND / "server.py").read_text(encoding="utf-8-sig", errors="replace")
+    tree = ast.parse(src)
+    fn = next(ast.get_source_segment(src, n) for n in ast.walk(tree)
+              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+              and n.name == "send_broadcast_messages")
+    assert '"paused"' in fn and "limit_reached" in fn, (
+        "hitting the ceiling must pause the broadcast so the scheduler can "
+        "resume it, otherwise the app's promise that the rest goes out "
+        "tomorrow is a lie"
+    )
+    sched = next(ast.get_source_segment(src, n) for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and n.name == "process_due_and_stalled_broadcasts")
+    assert '"paused"' in sched, "nothing ever picks a paused broadcast back up"

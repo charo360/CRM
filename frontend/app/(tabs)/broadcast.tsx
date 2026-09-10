@@ -185,6 +185,10 @@ export default function BroadcastScreen() {
 
   // AI generation state
   const [aiPrompt, setAiPrompt] = useState('');
+  // Null once the number has settled in. While it is set, the owner is told
+  // why a broadcast is capped and when it lifts -- an invisible limit is
+  // indistinguishable from a broken feature.
+  const [warmup, setWarmup] = useState<any>(null);
   const [businessType, setBusinessType] = useState('');
 
   // Image upload state
@@ -203,20 +207,29 @@ export default function BroadcastScreen() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [broadcastsRes, customersRes, templatesRes, groupsRes, productsRes, automationsRes] = await Promise.all([
+      // allSettled, not all. Promise.all is all-or-nothing: one endpoint
+      // failing threw away the other five results and left the whole tab
+      // empty with nothing but a console error. Now a single failure costs
+      // only its own section.
+      const results = await Promise.allSettled([
         apiClient.get('/broadcasts'),
         apiClient.get('/customers'),
         apiClient.get('/broadcast-templates'),
         apiClient.get('/customer-groups'),
         apiClient.get('/products'),
         apiClient.get('/broadcasts/automations'),
+        apiClient.get('/subscription/status'),
       ]);
-      setBroadcasts(broadcastsRes.data);
-      setCustomers(customersRes.data);
-      setTemplates(templatesRes.data);
-      setGroups(groupsRes.data);
-      setProducts(productsRes.data);
-      setAutomations(automationsRes.data);
+      const data = (i: number) =>
+        results[i].status === 'fulfilled' ? (results[i] as any).value.data : null;
+
+      if (data(0)) setBroadcasts(data(0));
+      if (data(1)) setCustomers(data(1));
+      if (data(2)) setTemplates(data(2));
+      if (data(3)) setGroups(data(3));
+      if (data(4)) setProducts(data(4));
+      if (data(5)) setAutomations(data(5));
+      setWarmup(data(6)?.whatsapp_warmup ?? null);
       // Load currency
       try {
         const settings = await settingsAPI.getSettings();
@@ -1160,6 +1173,27 @@ export default function BroadcastScreen() {
               <Text style={styles.recipientHint}>
                 Targeting: {getFilteredCount()} customer(s)
               </Text>
+              {warmup?.active && (
+                <View style={styles.warmupBox}>
+                  <Text style={styles.warmupTitle}>
+                    New WhatsApp number: {warmup.remaining} of {warmup.daily_limit} broadcast
+                    {warmup.daily_limit === 1 ? '' : 's'} left today
+                  </Text>
+                  <Text style={styles.warmupBody}>
+                    {warmup.next_limit > warmup.daily_limit
+                      ? `Goes up to ${warmup.next_limit} tomorrow, and to ${warmup.full_limit} a day within ${warmup.days_until_full} day${warmup.days_until_full === 1 ? '' : 's'}. `
+                      : ''}
+                    New numbers send fewer broadcasts at first so WhatsApp does not flag them.
+                    Replies to customers are never limited by this.
+                  </Text>
+                  {getFilteredCount() > warmup.remaining && (
+                    <Text style={styles.warmupWarn}>
+                      This send is {getFilteredCount()} people. The first {warmup.remaining} go
+                      out today and the rest continue automatically tomorrow.
+                    </Text>
+                  )}
+                </View>
+              )}
             </View>
 
             {/* 2. Message Input */}
@@ -2045,6 +2079,17 @@ const styles = StyleSheet.create({
   broadcastDate: { color: '#FFF', fontWeight: '600', marginBottom: 4 },
   statusRow: { flexDirection: 'row', alignItems: 'center' },
   statusBadge: { backgroundColor: '#2563EB', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4, marginRight: 8 },
+  warmupBox: {
+    backgroundColor: '#1A2942',
+    borderLeftWidth: 3,
+    borderLeftColor: '#FFD700',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 8,
+  },
+  warmupTitle: { color: '#FFD700', fontSize: 12, fontWeight: '700', marginBottom: 4 },
+  warmupBody: { color: '#8A94A6', fontSize: 11, lineHeight: 16 },
+  warmupWarn: { color: '#FFB347', fontSize: 11, lineHeight: 16, marginTop: 6 },
   statusFailed: { backgroundColor: '#FF4A4A22' },
   statusCompleted: { backgroundColor: '#25D366' },
   statusSending: { backgroundColor: '#F59E0B' },

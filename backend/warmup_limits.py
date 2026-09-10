@@ -10,7 +10,7 @@ So the daily allowance ramps over the first week. This is a ceiling on top of
 the plan's own daily cap, never a raise: a free plan on day six is still held
 to its own fifty.
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 # Days since the number was linked -> how many sends that day may carry.
@@ -74,3 +74,60 @@ def effective_daily_cap(plan_cap: int, connected_at, now: Optional[datetime] = N
     if warm is None:
         return plan_cap
     return min(plan_cap, warm)
+
+
+async def warmup_status(db, user: dict, plan_daily_cap: int,
+                        now: Optional[datetime] = None) -> Optional[dict]:
+    """What to tell the owner about their new number, or None once settled.
+
+    An invisible limit is indistinguishable from a broken feature. Somebody
+    whose broadcast stops at twenty needs to see that it is deliberate, that
+    replies are unaffected, and that it goes up tomorrow -- otherwise the only
+    signal is a send that halts for no stated reason.
+
+    The extra query only runs while the ramp is actually on. Established
+    accounts, which is nearly all of them, pay nothing for this.
+    """
+    now = now or datetime.utcnow()
+    linked_at = ((user or {}).get("whatsapp") or {}).get("connected_at")
+    cap = warmup_daily_cap(linked_at, now)
+    if cap is None:
+        return None
+
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    business_id = user.get("business_id", user.get("_id"))
+    try:
+        from whatsapp_service import BULK_SEND_CONTEXTS
+        sent_today = await db.messages.count_documents({
+            "user_id": business_id,
+            "direction": "outgoing",
+            "send_context": {"$in": list(BULK_SEND_CONTEXTS)},
+            "created_at": {"$gte": today},
+        })
+    except Exception:
+        sent_today = 0
+
+    effective = min(plan_daily_cap, cap)
+    tomorrow = warmup_daily_cap(linked_at, now + timedelta(days=1))
+    next_cap = plan_daily_cap if tomorrow is None else min(plan_daily_cap, tomorrow)
+
+    # Days remaining before only the plan's own cap applies.
+    days_left = 0
+    for day, _ in WARMUP_SCHEDULE:
+        if warmup_daily_cap(linked_at, now + timedelta(days=day)) is not None:
+            days_left = day
+    return {
+        "active": True,
+        "daily_limit": effective,
+        "sent_today": sent_today,
+        "remaining": max(0, effective - sent_today),
+        "next_limit": next_cap,
+        "full_limit": plan_daily_cap,
+        "days_until_full": days_left + 1,
+        # Said plainly, because this is what the owner sees.
+        "reason": (
+            "Your WhatsApp was connected recently. New numbers send fewer "
+            "broadcasts at first so WhatsApp does not flag them. Replies to "
+            "customers are not affected, and the limit rises every day."
+        ),
+    }

@@ -178,6 +178,24 @@ async def load_billing_record(db, user: dict) -> dict:
     return owner or user
 
 
+async def _warmup_status_safe(db, user, plan_id, paid_active, trial_active):
+    """Warm-up state for the app, or None. Never raises into entitlements."""
+    try:
+        from warmup_limits import warmup_status
+        from whatsapp_service import _DAILY_SEND_LIMITS
+
+        if paid_active:
+            plan_key = plan_id
+        elif trial_active:
+            plan_key = "trial"
+        else:
+            plan_key = "free"
+        plan_cap = _DAILY_SEND_LIMITS.get(plan_key, _DAILY_SEND_LIMITS["free"])
+        return await warmup_status(db, user, plan_cap)
+    except Exception:
+        return None
+
+
 async def build_entitlements(db, user: dict) -> Dict[str, Any]:
     record = await load_billing_record(db, user)
     now = datetime.utcnow()
@@ -237,6 +255,9 @@ async def build_entitlements(db, user: dict) -> Dict[str, Any]:
             "trial_credits": TRIAL_CREDITS if trial_entitled else 0,
         },
         "trial_credits": TRIAL_CREDITS if trial_entitled else 0,
+        # None once the number has settled in. Present so the app can explain a
+        # limit that would otherwise look like a broken broadcast.
+        "whatsapp_warmup": await _warmup_status_safe(db, user, plan_id, paid_active, trial_entitled),
         "features": dict(flags),
         "limits": {
             "monthly_messages": cap,
