@@ -955,7 +955,11 @@ async def execute_broadcast_automations():
             if a_type == "auto_followup":
                 broadcast_id = automation.get("broadcast_id")
                 delay_days = automation.get("delay_days", 3)
-                followup_msg = automation.get("followup_message", "")
+                # The endpoint stores "follow_up_message". This read
+                # "followup_message", got "", and hit the `continue` below
+                # every single time -- so auto follow-up never once fired.
+                followup_msg = (automation.get("follow_up_message")
+                                or automation.get("followup_message") or "")
                 if not broadcast_id or not followup_msg:
                     continue
 
@@ -983,40 +987,62 @@ async def execute_broadcast_automations():
 
                 customers = await db.customers.find(query).to_list(None)
 
-                # Filter to only customers who have NOT replied since broadcast
-                no_reply_customers = []
-                for c in customers:
-                    replied = await db.messages.find_one({
-                        "customer_id": c["_id"],
-                        "user_id": user_id,
-                        "direction": "incoming",
-                        "created_at": {"$gte": sent_at}
-                    })
-                    if not replied:
-                        no_reply_customers.append(c)
+                # Filter to only customers who have NOT replied since broadcast.
+                # One query for everyone who replied, rather than one query per
+                # customer -- the old shape was 5,000 round trips for a large
+                # audience.
+                replied_ids = set(await db.messages.distinct("customer_id", {
+                    "user_id": user_id,
+                    "direction": "incoming",
+                    "created_at": {"$gte": sent_at},
+                }))
+                no_reply_customers = [c for c in customers if c["_id"] not in replied_ids]
 
-                # Send follow-up to non-responders
-                sent = 0
-                for c in no_reply_customers:
-                    try:
-                        msg = followup_msg.replace("{{name}}", c.get("name", "there"))
-                        await whatsapp_service.send_message(
-                            user_id=user_id,
-                            to_number=c["phone_number"],
-                            message=msg,
-                            customer_name=c.get("name"),
-                            send_context="broadcast",
-                        )
-                        sent += 1
-                    except Exception as e:
-                        logging.error(f"Auto follow-up send error: {e}")
+                # Send follow-up to non-responders through the ordinary
+                # broadcast sender, so it is paced, resumable and visible in
+                # the app like any other broadcast. It used to send in a tight
+                # loop with no delay at all, which is the surest way to get a
+                # number banned.
+                if not no_reply_customers:
+                    await db.broadcast_automations.update_one(
+                        {"_id": automation["_id"]},
+                        {"$set": {"last_run": now, "last_run_sent": 0,
+                                  "status": "completed"}}
+                    )
+                    continue
 
-                # Mark automation as run
+                fu_id = str(uuid.uuid4())
+                await db.broadcasts.insert_one({
+                    "_id": fu_id,
+                    "user_id": user_id,
+                    "message": followup_msg,
+                    "name": f"Follow-up: {broadcast.get('name') or 'broadcast'}",
+                    "filter_type": "custom",
+                    "customer_ids": [c["_id"] for c in no_reply_customers],
+                    "recipients_count": len(no_reply_customers),
+                    "sent_count": 0,
+                    "recipient_ids": [c["_id"] for c in no_reply_customers],
+                    "sent_ids": [],
+                    "status": "pending",
+                    "image_urls": [],
+                    "image_url": None,
+                    "scheduled_at": None,
+                    "created_at": now,
+                })
+                asyncio.create_task(send_broadcast_messages(
+                    fu_id, user_id, followup_msg, no_reply_customers, []
+                ))
+
                 await db.broadcast_automations.update_one(
                     {"_id": automation["_id"]},
-                    {"$set": {"last_run": now, "last_run_sent": sent, "status": "completed"}}
+                    {"$set": {"last_run": now,
+                              "last_run_sent": len(no_reply_customers),
+                              "status": "completed"}}
                 )
-                logging.info(f"Auto follow-up executed: {sent} messages sent for broadcast {broadcast_id}")
+                logging.info(
+                    f"Auto follow-up started for broadcast {broadcast_id}: "
+                    f"{len(no_reply_customers)} non-responders"
+                )
 
             elif a_type == "recurring":
                 recurrence = automation.get("recurrence", "weekly")
@@ -1059,13 +1085,20 @@ async def execute_broadcast_automations():
                     "filter_type": filter_type,
                     "recipients_count": len(customers),
                     "sent_count": 0,
+                    "recipient_ids": [c["_id"] for c in customers],
+                    "sent_ids": [],
                     "status": "pending",
                     "image_urls": image_urls,
                     "image_url": image_urls[0] if image_urls else None,
                     "scheduled_at": None,
                     "created_at": now,
                 })
-                await send_broadcast_messages(new_id, user_id, message, customers, image_urls)
+                # As a task, not awaited. A paced send runs for an hour or
+                # more, and awaiting it here would hold up every other
+                # automation behind this one.
+                asyncio.create_task(
+                    send_broadcast_messages(new_id, user_id, message, customers, image_urls)
+                )
 
                 await db.broadcast_automations.update_one(
                     {"_id": automation["_id"]},
