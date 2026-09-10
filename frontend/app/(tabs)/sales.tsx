@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   RefreshControl,
   ScrollView,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -198,6 +200,16 @@ export default function SalesScreen() {
 
   // Currency
   const [currency, setCurrency] = useState('USD');
+
+  // Keeps the focused field visible once the keyboard covers the bottom of the form
+  const formScrollRef = useRef<ScrollView>(null);
+  const scrollFormToEnd = useCallback(() => {
+    setTimeout(() => formScrollRef.current?.scrollToEnd({ animated: true }), 150);
+  }, []);
+
+  // Status writes are optimistic; this tracks which order+field is still in flight
+  const [savingStatusFor, setSavingStatusFor] = useState<string | null>(null);
+  const statusTokenRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     const loadCurrency = async () => {
@@ -413,6 +425,46 @@ export default function SalesScreen() {
       setSaving(false);
     }
   };
+
+  // Apply the new status straight away, then confirm it with the server. Marking an
+  // order Paid also books a sale and fires a WhatsApp confirmation, so the round-trip
+  // can take a few seconds - waiting on it made the buttons feel dead.
+  const updateOrderStatus = useCallback(
+    async (order: Order, field: 'payment_status' | 'delivery_status', status: string) => {
+      if (order[field] === status) return;
+
+      const key = `${order.id}:${field}`;
+      const token = (statusTokenRef.current[key] || 0) + 1;
+      statusTokenRef.current[key] = token;
+
+      const applyToOrder = (next: Order) => {
+        setOrders((current) => current.map((o) => (o.id === order.id ? next : o)));
+        setSelectedOrder((current) => (current && current.id === order.id ? next : current));
+      };
+
+      applyToOrder({ ...order, [field]: status } as Order);
+      setSavingStatusFor(key);
+
+      try {
+        const response = await apiClient.put(
+          `/orders/${order.id}?${field}=${encodeURIComponent(status)}`
+        );
+        // A newer tap already superseded this one - don't let a stale reply win
+        if (statusTokenRef.current[key] !== token) return;
+        applyToOrder(response.data);
+      } catch (error) {
+        if (statusTokenRef.current[key] !== token) return;
+        applyToOrder(order);
+        Alert.alert(
+          'Error',
+          `Failed to update ${field === 'payment_status' ? 'payment' : 'delivery'} status`
+        );
+      } finally {
+        if (statusTokenRef.current[key] === token) setSavingStatusFor(null);
+      }
+    },
+    []
+  );
 
   // Initialize receipt message when editing starts
   const handleEditReceipt = () => {
@@ -1104,7 +1156,17 @@ export default function SalesScreen() {
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.modalContent}>
+          <KeyboardAvoidingView
+            style={styles.keyboardView}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          >
+          <ScrollView
+            ref={formScrollRef}
+            style={styles.modalContent}
+            contentContainerStyle={styles.modalContentInner}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
             {viewMode === 'sales' ? (
               <>
                 <View style={styles.formGroup}>
@@ -1326,6 +1388,7 @@ export default function SalesScreen() {
                       style={[styles.formInput, styles.receiptMessageInput]}
                       value={receiptMessage}
                       onChangeText={setReceiptMessage}
+                      onFocus={scrollFormToEnd}
                       placeholder="Customize your receipt message..."
                       placeholderTextColor="#666"
                       multiline
@@ -1386,6 +1449,7 @@ export default function SalesScreen() {
                     style={[styles.formInput, styles.receiptMessageInput]}
                     value={expenseDescription}
                     onChangeText={setExpenseDescription}
+                    onFocus={scrollFormToEnd}
                     placeholder="e.g., Bought inventory from supplier"
                     placeholderTextColor="#666"
                     multiline
@@ -1483,6 +1547,7 @@ export default function SalesScreen() {
                     style={[styles.formInput, styles.receiptMessageInput]}
                     value={orderNotes}
                     onChangeText={setOrderNotes}
+                    onFocus={scrollFormToEnd}
                     placeholder="e.g., Customer requested blue color"
                     placeholderTextColor="#666"
                     multiline
@@ -1532,6 +1597,7 @@ export default function SalesScreen() {
               </>
             )}
           </ScrollView>
+          </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
 
@@ -1875,25 +1941,22 @@ export default function SalesScreen() {
 
                 {/* Payment Status Update */}
                 <View style={{ marginBottom: 16 }}>
-                  <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Payment Status</Text>
+                  <View style={styles.statusLabelRow}>
+                    <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Payment Status</Text>
+                    {savingStatusFor === `${selectedOrder.id}:payment_status` && (
+                      <ActivityIndicator size="small" color="#25D366" style={styles.statusSpinner} />
+                    )}
+                  </View>
                   <View style={styles.statusUpdateContainer}>
                     {['Pending', 'Partial', 'Paid'].map((status) => (
                       <TouchableOpacity
                         key={status}
+                        activeOpacity={0.7}
                         style={[
                           styles.statusOption,
                           selectedOrder.payment_status === status && styles.statusOptionActive,
                         ]}
-                        onPress={async () => {
-                          try {
-                            const response = await apiClient.put(`/orders/${selectedOrder.id}?payment_status=${status}`);
-                            setOrders(orders.map(o => o.id === selectedOrder.id ? response.data : o));
-                            setSelectedOrder(response.data);
-                            Alert.alert('Success', 'Payment status updated');
-                          } catch (error) {
-                            Alert.alert('Error', 'Failed to update status');
-                          }
-                        }}
+                        onPress={() => updateOrderStatus(selectedOrder, 'payment_status', status)}
                       >
                         <Text
                           numberOfLines={1}
@@ -1912,25 +1975,22 @@ export default function SalesScreen() {
 
                 {/* Delivery Status Update */}
                 <View style={{ marginBottom: 16 }}>
-                  <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Delivery Status</Text>
+                  <View style={styles.statusLabelRow}>
+                    <Text style={[styles.detailsLabel, { marginBottom: 8 }]}>Delivery Status</Text>
+                    {savingStatusFor === `${selectedOrder.id}:delivery_status` && (
+                      <ActivityIndicator size="small" color="#25D366" style={styles.statusSpinner} />
+                    )}
+                  </View>
                   <View style={styles.statusUpdateContainer}>
                     {['Processing', 'Shipped', 'Delivered'].map((status) => (
                       <TouchableOpacity
                         key={status}
+                        activeOpacity={0.7}
                         style={[
                           styles.statusOption,
                           selectedOrder.delivery_status === status && styles.statusOptionActive,
                         ]}
-                        onPress={async () => {
-                          try {
-                            const response = await apiClient.put(`/orders/${selectedOrder.id}?delivery_status=${status}`);
-                            setOrders(orders.map(o => o.id === selectedOrder.id ? response.data : o));
-                            setSelectedOrder(response.data);
-                            Alert.alert('Success', 'Delivery status updated');
-                          } catch (error) {
-                            Alert.alert('Error', 'Failed to update status');
-                          }
-                        }}
+                        onPress={() => updateOrderStatus(selectedOrder, 'delivery_status', status)}
                       >
                         <Text
                           numberOfLines={1}
@@ -2588,8 +2648,15 @@ const styles = StyleSheet.create({
   modalSaveDisabled: {
     opacity: 0.5,
   },
+  keyboardView: {
+    flex: 1,
+  },
   modalContent: {
     padding: 20,
+  },
+  modalContentInner: {
+    // Room for the keyboard so the last fields stay reachable
+    paddingBottom: 60,
   },
   formGroup: {
     marginBottom: 20,
@@ -3033,11 +3100,19 @@ const styles = StyleSheet.create({
     gap: 8,
     flexWrap: 'nowrap',
   },
+  statusLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  statusSpinner: {
+    marginBottom: 8,
+  },
   statusOption: {
     flex: 1,
     minWidth: 0,
     paddingHorizontal: 6,
-    paddingVertical: 8,
+    paddingVertical: 13,
     borderRadius: 8,
     backgroundColor: '#1A2942',
     borderWidth: 1,
