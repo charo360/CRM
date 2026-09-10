@@ -466,6 +466,32 @@ export default function SalesScreen() {
     []
   );
 
+  // One tap converts. The order is already Paid to get here, which means the sale
+  // was booked server-side when it was marked Paid - this only clears it out of the
+  // orders queue, so asking which payment method to use was a tap that changed
+  // nothing. The method below is only read for the rare order that reached Paid
+  // without a sale attached.
+  const convertOrderToSale = useCallback(
+    async (order: Order) => {
+      const method = paymentMethods[0]?.name || 'Cash';
+
+      setOrders((current) => current.filter((o) => o.id !== order.id));
+      setOrderDetailsVisible(false);
+      setSelectedOrder(null);
+
+      try {
+        await apiClient.post(
+          `/orders/${order.id}/convert-to-sale?payment_method=${encodeURIComponent(method)}`
+        );
+        fetchData();
+      } catch (error: any) {
+        fetchData(); // put the order back the way the server still has it
+        Alert.alert('Error', error.response?.data?.detail || 'Failed to convert order');
+      }
+    },
+    [paymentMethods, fetchData]
+  );
+
   // Initialize receipt message when editing starts
   const handleEditReceipt = () => {
     if (!receiptMessage) {
@@ -1895,9 +1921,8 @@ export default function SalesScreen() {
                     onPress: async () => {
                       try {
                         await apiClient.delete(`/orders/${selectedOrder.id}`);
-                        setOrders(orders.filter(o => o.id !== selectedOrder.id));
+                        setOrders((current) => current.filter((o) => o.id !== selectedOrder.id));
                         setOrderDetailsVisible(false);
-                        Alert.alert('Success', 'Order deleted');
                       } catch (error) {
                         Alert.alert('Error', 'Failed to delete order');
                       }
@@ -2013,29 +2038,8 @@ export default function SalesScreen() {
                     <View style={styles.detailsDivider} />
                     <TouchableOpacity
                       style={[styles.convertButton, { marginHorizontal: 0, marginBottom: 16 }]}
-                      onPress={() => {
-                        Alert.alert(
-                          'Convert to Sale',
-                          'This will convert the order to a sale and remove it from orders. Choose payment method:',
-                          [
-                            ...paymentMethods.map((method) => ({
-                              text: method.name,
-                              onPress: async () => {
-                                try {
-                                  await apiClient.post(`/orders/${selectedOrder.id}/convert-to-sale?payment_method=${encodeURIComponent(method.name)}`);
-                                  setOrders(orders.filter(o => o.id !== selectedOrder.id));
-                                  setOrderDetailsVisible(false);
-                                  Alert.alert('Success', 'Order converted to sale!');
-                                  fetchData();
-                                } catch (error: any) {
-                                  Alert.alert('Error', error.response?.data?.detail || 'Failed to convert order');
-                                }
-                              },
-                            })),
-                            { text: 'Cancel', style: 'cancel' },
-                          ]
-                        );
-                      }}
+                      activeOpacity={0.7}
+                      onPress={() => convertOrderToSale(selectedOrder)}
                     >
                       <Ionicons name="checkmark-circle-outline" size={20} color="#FFFFFF" />
                       <Text style={styles.convertButtonText}>Convert to Sale</Text>
