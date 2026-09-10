@@ -8685,23 +8685,51 @@ async def delete_product_image(
 
 @api_router.post("/ai/generate-broadcast-message")
 async def generate_broadcast_message(request: AIMessageRequest, user = Depends(get_current_user)):
-    """Generate a broadcast message using AI"""
+    """Generate a broadcast message using AI.
+
+    Charged at the rate of the model the owner picked, the same weight a reply
+    on that model is worth. Unlike a chat draft -- billed when it is sent,
+    because it becomes a real message -- a broadcast draft has no send of its
+    own to carry the charge: the broadcast costs one per recipient however it
+    was written. Without this, writing with an expensive model was free, and
+    could be repeated all day.
+    """
+    business_id = user.get("business_id", user["_id"])
+    model_pref = (user.get("settings") or {}).get("ai_model", "standard")
+
+    from ai_service import model_message_cost
+    from ai_draft_billing import charge_draft
+    from plan_enforcement import enforce_message_limit
+
+    cost = model_message_cost(model_pref)
+
+    # Checked before the model is called, so an owner who has run out is told
+    # plainly rather than charged for something they cannot use.
+    await enforce_message_limit(db, business_id, cost)
+
     try:
         drafter = get_drafter()
         generated_message = await drafter.draft_broadcast_message(
             prompt=request.prompt,
             business_type=request.business_type or user.get("business_type"),
             business_name=user.get("business_name") or "",
-            # The owner's own model choice, like every other draft. Free plans
-            # can only hold "standard", so this cannot select a paid model on
-            # its own. Nothing is billed here - a draft is charged on send.
-            model_pref=(user.get("settings") or {}).get("ai_model", "standard"),
+            # Free plans can only hold "standard", so this cannot reach a paid
+            # model on its own.
+            model_pref=model_pref,
         )
-        
-        return {"message": generated_message}
     except Exception as e:
         logging.error(f"AI generation error: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate message")
+
+    if not (generated_message or "").strip():
+        # Nothing usable came back, so there is nothing to charge for.
+        raise HTTPException(status_code=500, detail="Failed to generate message")
+
+    # Charged only now, after the model has actually answered.
+    charged = await charge_draft(
+        db, business_id, model_pref, kind="broadcast", detail=request.prompt
+    )
+    return {"message": generated_message, "cost": charged, "model": model_pref}
 
 # ============ IMAGE UPLOAD ENDPOINTS ============
 

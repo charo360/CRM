@@ -185,6 +185,9 @@ export default function BroadcastScreen() {
 
   // AI generation state
   const [aiPrompt, setAiPrompt] = useState('');
+  // What the last draft cost, so writing on an expensive model is not a
+  // silent deduction the owner only notices in their allowance later.
+  const [lastDraftCost, setLastDraftCost] = useState<number | null>(null);
   const [businessType, setBusinessType] = useState('');
 
   // Image upload state
@@ -519,6 +522,7 @@ export default function BroadcastScreen() {
         business_type: businessType || undefined,
       });
       setMessage(response.data.message);
+      setLastDraftCost(typeof response.data.cost === 'number' ? response.data.cost : null);
       setAiPrompt('');
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to generate message');
@@ -772,6 +776,7 @@ export default function BroadcastScreen() {
     setMessage('');
     setSelectedImages([]);
     setScheduledDate('');
+    setLastDraftCost(null);
     setSaveAsTemplate(false);
     setTemplateName('');
   };
@@ -1186,6 +1191,13 @@ export default function BroadcastScreen() {
                   </Text>
                 </TouchableOpacity>
               </View>
+              {lastDraftCost !== null && (
+                <Text style={{ color: '#8A94A6', fontSize: 11, marginBottom: 8 }}>
+                  {lastDraftCost === 1
+                    ? 'Writing that used 1 message from your plan.'
+                    : `Writing that used ${lastDraftCost} messages from your plan.`}
+                </Text>
+              )}
               <TextInput
                 style={styles.messageInput}
                 multiline

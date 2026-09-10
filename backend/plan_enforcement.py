@@ -48,8 +48,18 @@ async def get_monthly_message_count(db, user_id: str) -> int:
         "date": {"$gte": start}
     })
 
-    total = wa_count + email_count
-    logger.info(f"[PlanEnforcement] User {user_id} monthly messages: WhatsApp={wa_count}, Email={email_count}, Total={total}")
+    # Writing with AI is charged as well, from its own ledger rather than
+    # db.messages -- a draft is not a send. entitlements.count_monthly_outbound
+    # adds the identical figure; these two counters answering differently is a
+    # bug that has already happened once.
+    from ai_draft_billing import monthly_draft_cost
+    draft_cost = await monthly_draft_cost(db, user_id, start)
+
+    total = wa_count + email_count + draft_cost
+    logger.info(
+        f"[PlanEnforcement] User {user_id} monthly messages: WhatsApp={wa_count}, "
+        f"Email={email_count}, AI drafts={draft_cost}, Total={total}"
+    )
     return total
 
 

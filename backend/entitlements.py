@@ -149,9 +149,17 @@ async def count_monthly_outbound(db, business_id: str, now: Optional[datetime] =
         {"$match": match},
         {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$message_cost", 1]}}}},
     ])
+    sent = 0
     async for row in cursor:
-        return int(row.get("total") or 0)
-    return 0
+        sent = int(row.get("total") or 0)
+
+    # Writing with AI is charged too. It is not stored as a message -- one
+    # draft may go to four hundred people or to nobody -- so it is counted
+    # from its own ledger. plan_enforcement adds the same figure; a source of
+    # usage that only one counter knows about is how the two came to disagree
+    # before.
+    from ai_draft_billing import monthly_draft_cost
+    return sent + await monthly_draft_cost(db, business_id, month_start)
 
 
 def extra_message_balance(record: dict) -> int:
