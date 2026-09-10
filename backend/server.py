@@ -1667,6 +1667,12 @@ class ExpenseCreate(BaseModel):
     description: Optional[str] = None
     date: Optional[datetime] = None
 
+class ExpenseUpdate(BaseModel):
+    category: Optional[str] = None
+    amount: Optional[float] = None
+    description: Optional[str] = None
+    date: Optional[datetime] = None
+
 class ExpenseResponse(BaseModel):
     id: str
     user_id: str
@@ -8195,6 +8201,43 @@ async def get_expenses(user = Depends(get_current_user)):
         )
         for e in expenses
     ]
+
+@api_router.put("/expenses/{expense_id}", response_model=ExpenseResponse)
+async def update_expense(expense_id: str, expense: ExpenseUpdate, user = Depends(get_current_user)):
+    """Correct an expense that was recorded wrong. Employees may only touch their own."""
+    business_id = user.get("business_id", user["_id"])
+    query = {"_id": expense_id, "user_id": business_id}
+    if user.get("role", "owner") == "employee":
+        query["recorded_by"] = user["_id"]
+
+    existing = await db.expenses.find_one(query)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    update_ops = {}
+    if expense.category is not None:
+        update_ops["category"] = expense.category
+    if expense.amount is not None:
+        if expense.amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+        update_ops["amount"] = expense.amount
+    if expense.description is not None:
+        update_ops["description"] = expense.description or None
+    if expense.date is not None:
+        update_ops["created_at"] = expense.date
+
+    if update_ops:
+        await db.expenses.update_one({"_id": existing["_id"]}, {"$set": update_ops})
+        existing = await db.expenses.find_one({"_id": existing["_id"]})
+
+    return ExpenseResponse(
+        id=existing["_id"],
+        user_id=existing["user_id"],
+        category=existing["category"],
+        amount=existing["amount"],
+        description=existing.get("description"),
+        created_at=existing["created_at"],
+    )
 
 @api_router.delete("/expenses/{expense_id}")
 async def delete_expense(expense_id: str, user = Depends(get_current_user)):

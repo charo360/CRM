@@ -188,6 +188,8 @@ export default function SalesScreen() {
   const [expenseCategory, setExpenseCategory] = useState('Inventory');
   const [expenseAmount, setExpenseAmount] = useState('');
   const [expenseDescription, setExpenseDescription] = useState('');
+  // Set when the expense form is correcting an existing row rather than adding one
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
 
   // Order form state
   const [orderProduct, setOrderProduct] = useState('');
@@ -324,6 +326,15 @@ export default function SalesScreen() {
     setExpenseCategory('Inventory');
     setExpenseAmount('');
     setExpenseDescription('');
+    setEditingExpense(null);
+  };
+
+  const openExpenseForEdit = (expense: Expense) => {
+    setEditingExpense(expense);
+    setExpenseCategory(expense.category);
+    setExpenseAmount(String(expense.amount));
+    setExpenseDescription(expense.description || '');
+    setModalVisible(true);
   };
 
   const handleCreateExpense = async () => {
@@ -347,6 +358,33 @@ export default function SalesScreen() {
       Alert.alert('Success', 'Expense recorded!');
     } catch (error: any) {
       Alert.alert('Error', error.response?.data?.detail || 'Failed to record expense');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdateExpense = async () => {
+    if (!editingExpense) return;
+    if (!expenseAmount || parseFloat(expenseAmount) <= 0) {
+      Alert.alert('Error', 'Please enter a valid amount');
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const response = await apiClient.put(`/expenses/${editingExpense.id}`, {
+        category: expenseCategory,
+        amount: parseFloat(expenseAmount),
+        description: expenseDescription.trim(),
+      });
+
+      setExpenses((current) =>
+        current.map((e) => (e.id === editingExpense.id ? response.data : e))
+      );
+      setModalVisible(false);
+      resetExpenseForm();
+    } catch (error: any) {
+      Alert.alert('Error', error.response?.data?.detail || 'Failed to update expense');
     } finally {
       setSaving(false);
     }
@@ -895,9 +933,20 @@ export default function SalesScreen() {
         </View>
         <View style={styles.amountContainer}>
           <Text style={[styles.amount, { color: '#FF6B6B' }]}>{currency} {expense.amount.toLocaleString()}</Text>
-          <TouchableOpacity onPress={() => handleDeleteExpense(expense.id)}>
-            <Ionicons name="trash-outline" size={16} color="#FF6B6B" />
-          </TouchableOpacity>
+          <View style={styles.expenseActions}>
+            <TouchableOpacity
+              onPress={() => openExpenseForEdit(expense)}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+            >
+              <Ionicons name="create-outline" size={18} color="#4A90D9" />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleDeleteExpense(expense.id)}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+            >
+              <Ionicons name="trash-outline" size={18} color="#FF6B6B" />
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
       <View style={styles.saleDetails}>
@@ -1175,7 +1224,10 @@ export default function SalesScreen() {
       {/* WhatsApp-style Floating Action Button */}
       <TouchableOpacity
         style={styles.fab}
-        onPress={() => setModalVisible(true)}
+        onPress={() => {
+          if (viewMode === 'expenses') resetExpenseForm();
+          setModalVisible(true);
+        }}
         activeOpacity={0.8}
       >
         <Ionicons name="add" size={22} color="#FFFFFF" />
@@ -1189,6 +1241,7 @@ export default function SalesScreen() {
         onRequestClose={() => {
           setModalVisible(false);
           resetForm();
+          resetExpenseForm();
         }}
       >
         <SafeAreaView style={styles.modalContainer}>
@@ -1196,14 +1249,25 @@ export default function SalesScreen() {
             <TouchableOpacity onPress={() => {
               setModalVisible(false);
               resetForm();
+              resetExpenseForm();
             }}>
               <Ionicons name="close" size={28} color="#888" />
             </TouchableOpacity>
             <Text style={styles.modalTitle}>
-              {viewMode === 'sales' ? 'New Sale' : viewMode === 'expenses' ? 'New Expense' : 'New Order'}
+              {viewMode === 'sales'
+                ? 'New Sale'
+                : viewMode === 'expenses'
+                  ? (editingExpense ? 'Edit Expense' : 'New Expense')
+                  : 'New Order'}
             </Text>
             <TouchableOpacity
-              onPress={viewMode === 'sales' ? handleCreateSale : viewMode === 'expenses' ? handleCreateExpense : handleCreateOrder}
+              onPress={
+                viewMode === 'sales'
+                  ? handleCreateSale
+                  : viewMode === 'expenses'
+                    ? (editingExpense ? handleUpdateExpense : handleCreateExpense)
+                    : handleCreateOrder
+              }
               disabled={saving}
             >
               <Text style={[styles.modalSave, saving && styles.modalSaveDisabled]}>
@@ -2433,6 +2497,11 @@ const styles = StyleSheet.create({
   },
   amountContainer: {
     alignItems: 'flex-end',
+  },
+  expenseActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 20,
   },
   amount: {
     fontSize: 16,
