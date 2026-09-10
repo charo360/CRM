@@ -167,6 +167,32 @@ export default function FollowupsScreen() {
   const [coldOutcomeNote, setColdOutcomeNote] = useState('');
   const [savingColdOutcome, setSavingColdOutcome] = useState(false);
 
+  const handleDismissCold = (customer: ColdCustomer) => {
+    Alert.alert(
+      'Remove from Needs Attention?',
+      `${customer.name} will stop appearing here. If they message you again, they come back.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            // Off the list straight away; a dismissal that waits for the
+            // network feels like the tap did not register.
+            const previous = coldCustomers;
+            setColdCustomers(prev => prev.filter(c => c.id !== customer.id));
+            try {
+              await apiClient.post(`/customers/${customer.id}/dismiss-followup`);
+            } catch (e) {
+              setColdCustomers(previous);
+              Alert.alert('Error', 'Could not remove that one. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleColdDone = async () => {
     if (!coldDoneCustomer || !coldSelectedOutcome) return;
     setSavingColdOutcome(true);
@@ -663,6 +689,16 @@ export default function FollowupsScreen() {
               : 'Never'}
           </Text>
         </View>
+        {/* Clearing an entry used to mean picking an outcome that may not have
+            happened. This just takes it off the list. */}
+        <TouchableOpacity
+          style={styles.coldDismissBtn}
+          onPress={() => handleDismissCold(customer)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          accessibilityLabel={`Remove ${customer.name} from Needs Attention`}
+        >
+          <Ionicons name="close" size={16} color="#666" />
+        </TouchableOpacity>
       </View>
 
       {/* AI-Generated Reason */}
@@ -1949,6 +1985,7 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#666',
   },
+  coldDismissBtn: { paddingLeft: 8, paddingVertical: 2 },
   coldMetaRight: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -5513,7 +5513,59 @@ async def get_cold_customers(days: int = 14, user = Depends(get_current_user)):
         days = x.get("days_since_contact")
         return int(days) if days is not None else 999
     result.sort(key=_sort_key, reverse=True)
+    # Filter before the trim, or a dismissed row still occupies one of the
+    # thirty slots and pushes a real suggestion off the end.
+    result = await _drop_dismissed_suggestions(business_id, result)
     return serialize_doc(result[:30])  # Only return top 30 most urgent customers
+
+async def _drop_dismissed_suggestions(business_id, rows: list) -> list:
+    """Remove suggestions the owner has already waved away.
+
+    A dismissal lasts until that person gets in touch again, at which point
+    they are worth surfacing once more -- somebody who messages you after you
+    decided to leave them alone is a different situation.
+
+    Two queries for the whole list rather than two per row: one for the
+    dismissal times, one for any inbound message since the earliest of them.
+    """
+    if not rows:
+        return rows
+
+    ids = [r["id"] for r in rows]
+    dismissed = {}
+    async for c in db.customers.find(
+        {"_id": {"$in": ids}, "followup_dismissed_at": {"$exists": True, "$ne": None}},
+        {"followup_dismissed_at": 1},
+    ):
+        dismissed[c["_id"]] = c["followup_dismissed_at"]
+    if not dismissed:
+        return rows
+
+    # Anyone who has written in since they were dismissed comes back.
+    earliest = min(dismissed.values())
+    spoke_again = {}
+    async for row in db.messages.aggregate([
+        {"$match": {
+            "user_id": business_id,
+            "customer_id": {"$in": list(dismissed)},
+            "direction": "incoming",
+            "created_at": {"$gt": earliest},
+        }},
+        {"$group": {"_id": "$customer_id", "last": {"$max": "$created_at"}}},
+    ]):
+        spoke_again[row["_id"]] = row["last"]
+
+    kept = []
+    for r in rows:
+        at = dismissed.get(r["id"])
+        if at is None:
+            kept.append(r)
+            continue
+        since = spoke_again.get(r["id"])
+        if since is not None and since > at:
+            kept.append(r)
+    return kept
+
 
 @api_router.get("/customers/cold-with-reasons")
 async def get_cold_customers_with_ai_reasons(days: int = 14, user = Depends(get_current_user)):
@@ -6147,6 +6199,46 @@ Output only the message text. Nothing else."""
     )
 
     return {"message": new_message}
+
+
+@api_router.post("/customers/{customer_id}/dismiss-followup")
+async def dismiss_followup_suggestion(customer_id: str, user = Depends(get_current_user)):
+    """Take somebody off the Needs Attention list without inventing an outcome.
+
+    Clearing an entry used to mean pressing Done and choosing from a list of
+    outcomes -- called, replied, converted, not interested -- which also wrote
+    last_owner_reply as though the owner had answered them. For a suggestion
+    that is simply noise, a contact who is not really a customer or somebody
+    already dealt with elsewhere, every one of those answers is a lie, and the
+    lie lands in the field that decides who looks neglected.
+
+    Dismissing records nothing about the customer except that the owner does
+    not want to be prompted about them. It lasts until that person gets in
+    touch again, at which point they are worth surfacing once more.
+    """
+    business_id = user.get("business_id", user["_id"])
+    customer = await db.customers.find_one({"_id": customer_id, "user_id": business_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    await db.customers.update_one(
+        {"_id": customer_id},
+        {"$set": {"followup_dismissed_at": datetime.utcnow()}},
+    )
+    return {"status": "dismissed"}
+
+
+@api_router.post("/customers/{customer_id}/undismiss-followup")
+async def undismiss_followup_suggestion(customer_id: str, user = Depends(get_current_user)):
+    """Undo a dismissal, for the tap that was not meant."""
+    business_id = user.get("business_id", user["_id"])
+    result = await db.customers.update_one(
+        {"_id": customer_id, "user_id": business_id},
+        {"$unset": {"followup_dismissed_at": ""}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"status": "restored"}
 
 
 @api_router.post("/followup-events")
