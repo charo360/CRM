@@ -12153,7 +12153,22 @@ async def evolution_webhook(request: Request):
                     # answering over the owner. This path never ran before the
                     # switch to message.any, so the pause only ever worked for
                     # replies sent from inside the app.
-                    await _redis_set_ts(f"{user['_id']}:{from_number}:owner_reply", _OWNER_ATTENTION_TTL)
+                    # Pause under every id this customer's own messages can
+                    # arrive under. On a hidden-number chat the owner's message
+                    # often resolves only to the LID while the customer's
+                    # resolves to the phone, so a pause keyed on one alone would
+                    # not stop the AI answering the customer's next message.
+                    _pause_ids = {str(from_number)}
+                    _cust_ids = await db.customers.find_one(
+                        {"_id": customer_id}, {"phone_number": 1, "lid_jid": 1}
+                    ) if customer_id else None
+                    for _v in ((_cust_ids or {}).get("phone_number"), (_cust_ids or {}).get("lid_jid")):
+                        if _v:
+                            _pause_ids.add(str(_v))
+                            _pause_ids.add("".join(ch for ch in str(_v) if ch.isdigit()))
+                    for _pid in _pause_ids:
+                        if _pid:
+                            await _redis_set_ts(f"{user['_id']}:{_pid}:owner_reply", _OWNER_ATTENTION_TTL)
                     logging.info(
                         f"Auto-reply skipped for {from_number}: this message was sent by "
                         "the connected WhatsApp account (from_me); owner typed it, AI paused 15 min"

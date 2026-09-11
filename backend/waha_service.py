@@ -220,6 +220,32 @@ def _payload_push_name(data: dict) -> str:
     return ""
 
 
+def _chat_of(data: dict, from_me: bool, own_number: str = "") -> str:
+    """The conversation a message belongs to.
+
+    NOWEB puts a direct chat in ``from`` whichever way the message went: an
+    owner's own message carries no ``to`` and no ``chatId`` at all. Reading
+    ``to`` for the owner's messages therefore gave an empty chat, the parser
+    dropped it, and every reply the owner typed on their phone vanished --
+    four of them in a row on the live account, each one delivered by the
+    gateway and each one discarded here.
+
+    Other engines do send ``to`` for an outgoing message, so it is still
+    preferred when present. The owner's own number is never the conversation.
+    """
+    own = _digits(own_number)
+    candidates = [data.get("chatId")]
+    candidates += [data.get("to"), data.get("from")] if from_me else [data.get("from")]
+    for candidate in candidates:
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        if from_me and own and _digits(text.split("@", 1)[0]) == own:
+            continue
+        return text
+    return ""
+
+
 def _payload_phone(
     data: dict, from_me: bool, own_number: str = "", lid: object = None,
 ) -> Optional[str]:
@@ -1903,7 +1929,8 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
         if not user:
             return None
         from_me = bool(data.get("fromMe", False))
-        remote_jid = str(data.get("chatId") or (data.get("to") if from_me else data.get("from")) or "")
+        own_number = str((user.get("whatsapp") or {}).get("phone_number") or "")
+        remote_jid = _chat_of(data, from_me, own_number)
         if not _is_person_chat(remote_jid):
             return None
 
