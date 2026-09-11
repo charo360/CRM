@@ -7058,7 +7058,8 @@ async def update_order(
             pass
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
+    was_paid = str(order.get("payment_status") or "").strip().lower() == "paid"
+
     # Build update operations
     update_ops = {}
     if payment_status:
@@ -7093,8 +7094,10 @@ async def update_order(
         customer_name = customer.get("name", "Unknown") if customer else "Unknown"
         customer_phone = customer.get("phone_number", "N/A") if customer else "N/A"
 
-    # Send WhatsApp confirmation when owner marks order as Paid
-    if payment_status is not None and (payment_status or "").strip().lower() == "paid" and customer_phone and customer_phone != "N/A":
+    # Send WhatsApp confirmation when owner marks order as Paid - once, not on
+    # every later edit that happens to repeat payment_status=Paid.
+    if (payment_status is not None and (payment_status or "").strip().lower() == "paid"
+            and not was_paid and customer_phone and customer_phone != "N/A"):
         try:
             ws = get_whatsapp_service(db)
             order_number = order.get("order_number", "")
@@ -17980,11 +17983,38 @@ async def update_booking(booking_id: str, update: BookingUpdate, user=Depends(ge
     doc = await db.bookings.find_one(_booking_query_by_id(business_id, booking_id))
     if not doc:
         raise HTTPException(status_code=404, detail="Booking not found")
+    was_paid = str(doc.get("payment_status") or "").strip().lower() == "paid"
     updates = {k: v for k, v in update.dict().items() if v is not None}
     if updates:
         q = _booking_query_by_id(business_id, booking_id)
         await db.bookings.update_one(q, {"$set": updates})
         doc.update(updates)
+
+    # The owner marking a booking Paid is the moment the customer should hear
+    # it, the same as with orders - not on the next scheduled push.
+    now_paid = str(updates.get("payment_status") or "").strip().lower() == "paid"
+    phone = doc.get("customer_phone")
+    if now_paid and not was_paid and phone:
+        try:
+            amount = doc.get("total_price") or doc.get("price") or 0
+            currency = (user.get("settings") or {}).get("currency", "")
+            amount_str = f"{currency} {float(amount):,.0f}".strip() if amount else ""
+            amount_line = f"\n💰 Amount: *{amount_str}*" if amount_str else ""
+            ref = f" for *{doc.get('service_name', 'your booking')}*" if doc.get("service_name") else ""
+            booking_ref = f" (ref *{doc.get('booking_number')}*)" if doc.get("booking_number") else ""
+            msg = (
+                f"✅ *Payment Confirmed!*\n\n"
+                f"Hi {doc.get('customer_name', 'there')}! Your payment{ref}{booking_ref} "
+                f"has been confirmed.{amount_line}\n\nThank you! 🙏"
+            )
+            ws = get_whatsapp_service(db)
+            await ws.send_message(
+                user_id=business_id, to_number=phone, message=msg,
+                send_context="payment_confirmed",
+            )
+        except Exception as e:
+            logging.warning(f"[update_booking] Failed to send payment confirmation WhatsApp: {e}")
+
     return _booking_to_response(doc)
 
 @api_router.delete("/bookings/{booking_id}")
