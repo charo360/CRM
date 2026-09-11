@@ -1410,6 +1410,12 @@ export default function AccountScreen() {
         businessName={user?.business_name}
         onClose={() => setShowPaymentSetup(false)}
         onConnectionChanged={fetchData}
+        onOpenBusinessKnowledge={() => {
+          setShowPaymentSetup(false);
+          // iOS drops a modal presented in the same tick another is
+          // dismissed, so let the first finish closing before opening this.
+          setTimeout(() => setShowBusinessKnowledge(true), 350);
+        }}
       />
       <Modal
         visible={showBusinessType}

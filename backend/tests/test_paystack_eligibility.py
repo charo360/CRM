@@ -116,3 +116,20 @@ def test_the_app_checks_eligibility_before_showing_the_form():
     assert "platform_eligible !== false" in modal, (
         "the bank list is still loaded for a business that cannot connect"
     )
+
+
+def test_an_ineligible_business_is_sent_to_the_manual_route():
+    """Not a dead end: the notice says where manual payment details go,
+    and offers a way there."""
+    modal = (BACKEND.parent / "frontend" / "components" /
+             "PaymentSetupModal.tsx").read_text(encoding="utf-8", errors="replace")
+    notice = modal[modal.index("platform_eligible === false ?"):]
+    notice = notice[:notice.index(") : (")]
+    assert "Business Knowledge" in notice and "Payment Methods" in notice
+    assert "onOpenBusinessKnowledge" in notice, "no way to get there from the notice"
+
+    account = (BACKEND.parent / "frontend" / "app" / "(tabs)" /
+               "account.tsx").read_text(encoding="utf-8", errors="replace")
+    assert "onOpenBusinessKnowledge=" in account, (
+        "the account screen never passes the callback, so the button never shows"
+    )

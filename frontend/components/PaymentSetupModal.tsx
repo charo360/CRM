@@ -24,6 +24,9 @@ interface PaymentSetupModalProps {
   businessName?: string;
   onClose: () => void;
   onConnectionChanged?: () => void;
+  /** Takes the owner to Business Knowledge, where manual payment details
+   *  live, when online payments are not available to their business. */
+  onOpenBusinessKnowledge?: () => void;
 }
 
 const errorMessage = (error: any, fallback: string) =>
@@ -34,6 +37,7 @@ export default function PaymentSetupModal({
   businessName = '',
   onClose,
   onConnectionChanged,
+  onOpenBusinessKnowledge,
 }: PaymentSetupModalProps) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -257,19 +261,32 @@ export default function PaymentSetupModal({
             ) : connection?.platform_eligible === false ? (
               // Said up front. It used to show the whole form, let the owner
               // fill it in, and refuse only when they pressed save.
-              <View style={styles.noticeCard}>
-                <Ionicons name="globe-outline" size={28} color="#FBBF24" />
-                <View style={styles.noticeCopy}>
-                  <Text style={styles.noticeTitle}>Online payments are for Kenyan businesses</Text>
-                  <Text style={styles.noticeText}>
-                    {connection.eligibility_reason
-                      || 'Online payments through Zilo are available to businesses registered in Kenya.'}
-                  </Text>
-                  <Text style={[styles.noticeText, { marginTop: 8 }]}>
-                    Customers can still order from your catalog and pay you directly. You can mark those orders paid in Sales.
-                  </Text>
+              <>
+                <View style={styles.noticeCard}>
+                  <Ionicons name="globe-outline" size={28} color="#FBBF24" />
+                  <View style={styles.noticeCopy}>
+                    <Text style={styles.noticeTitle}>Online payments are for Kenyan businesses</Text>
+                    <Text style={styles.noticeText}>
+                      {connection.eligibility_reason
+                        || 'Online payments through Zilo are available to businesses registered in Kenya.'}
+                    </Text>
+                    {/* The manual route. Payment Methods in Business Knowledge is
+                        what the AI reads when a customer is ready to pay. */}
+                    <Text style={[styles.noticeText, { marginTop: 8 }]}>
+                      You can still take payment manually. Add how customers pay you — your M-Pesa number, bank details or PayPal — under Business Knowledge → Payment Methods, and the AI shares them when a customer is ready to pay.
+                    </Text>
+                  </View>
                 </View>
-              </View>
+                {onOpenBusinessKnowledge && (
+                  <TouchableOpacity
+                    style={styles.primaryButton}
+                    onPress={onOpenBusinessKnowledge}
+                    accessibilityLabel="Add payment details in Business Knowledge"
+                  >
+                    <Text style={styles.primaryButtonText}>Add payment details</Text>
+                  </TouchableOpacity>
+                )}
+              </>
             ) : (
               <>
                 <View style={styles.heroCard}>
