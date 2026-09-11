@@ -80,7 +80,9 @@ export default function PaymentSetupModal({
       setPlatformAvailable(Boolean(setup.platform_available));
       setConnection(currentConnection);
       setMerchantName((current) => current || currentConnection.subaccount_name || businessName);
-      if (setup.platform_available && !currentConnection.connected) {
+      // No point loading banks for a business that cannot connect.
+      if (setup.platform_available && !currentConnection.connected
+          && currentConnection.platform_eligible !== false) {
         await loadOptions(payoutType);
       }
     } catch (error: any) {
@@ -252,6 +254,22 @@ export default function PaymentSetupModal({
                   {saving ? <ActivityIndicator color="#F87171" /> : <Text style={styles.disconnectText}>Disconnect payment setup</Text>}
                 </TouchableOpacity>
               </>
+            ) : connection?.platform_eligible === false ? (
+              // Said up front. It used to show the whole form, let the owner
+              // fill it in, and refuse only when they pressed save.
+              <View style={styles.noticeCard}>
+                <Ionicons name="globe-outline" size={28} color="#FBBF24" />
+                <View style={styles.noticeCopy}>
+                  <Text style={styles.noticeTitle}>Online payments are for Kenyan businesses</Text>
+                  <Text style={styles.noticeText}>
+                    {connection.eligibility_reason
+                      || 'Online payments through Zilo are available to businesses registered in Kenya.'}
+                  </Text>
+                  <Text style={[styles.noticeText, { marginTop: 8 }]}>
+                    Customers can still order from your catalog and pay you directly. You can mark those orders paid in Sales.
+                  </Text>
+                </View>
+              </View>
             ) : (
               <>
                 <View style={styles.heroCard}>

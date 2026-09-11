@@ -87,6 +87,51 @@ def _parse_subaccount_payload(body: dict) -> dict:
     }
 
 
+_COUNTRY_NAMES = {
+    "US": "the United States", "GB": "the United Kingdom", "KR": "South Korea",
+    "NG": "Nigeria", "GH": "Ghana", "ZA": "South Africa", "UG": "Uganda",
+    "TZ": "Tanzania", "RW": "Rwanda", "CA": "Canada", "FI": "Finland",
+    "IN": "India", "AE": "the United Arab Emirates",
+}
+
+
+def _platform_eligibility(user: dict) -> dict:
+    """Whether this business can take payments through Zilo's own Paystack.
+
+    One rule, used both to answer the app before it shows the form and to
+    refuse the request if it arrives anyway. The app used to check only
+    whether the platform was switched on at all, so a business registered
+    outside Kenya was shown the full M-Pesa and bank form, filled it in, and
+    was refused only after pressing save -- with a message pointing at an
+    "own Paystack account" option the app does not have.
+
+    The country comes from signup, detected from the phone number. A business
+    with no country recorded is treated as Kenyan, as it always has been.
+    """
+    country = _clean_text(
+        (user or {}).get("country_code")
+        or ((user or {}).get("settings") or {}).get("country_code"),
+        max_len=16,
+    ).upper()
+    if not platform_configured():
+        return {
+            "eligible": False,
+            "country_code": country or None,
+            "reason": "Online payments are not switched on for Zilo yet.",
+        }
+    if country and country not in {"KE", "KENYA"}:
+        where = _COUNTRY_NAMES.get(country, country)
+        return {
+            "eligible": False,
+            "country_code": country,
+            "reason": (
+                "Online payments through Zilo are available to businesses "
+                f"registered in Kenya. This business is registered in {where}."
+            ),
+        }
+    return {"eligible": True, "country_code": country or None, "reason": None}
+
+
 async def _record_connect_failure(db, user: dict, stage: str, message: str) -> None:
     """Keep why a payout setup failed, so it can be answered later.
 
@@ -147,6 +192,7 @@ def register_paystack_routes(
         )
         connected = paystack_connected(doc)
         mode = paystack_auth_mode(doc)
+        _elig = _platform_eligibility(user)
         return {
             "connected": connected,
             "business_name": (doc or {}).get("paystack_business_name") if connected else None,
@@ -159,6 +205,11 @@ def register_paystack_routes(
             "auth_mode": mode,
             "platform_managed": mode == PAYSTACK_AUTH_PLATFORM,
             "platform_available": platform_configured(),
+            # Per business, not per server. platform_available only says the
+            # feature exists; this says whether *this* business can use it.
+            "platform_eligible": _elig["eligible"],
+            "eligibility_reason": _elig["reason"],
+            "country_code": _elig["country_code"],
         }
 
     @api_router.get("/paystack/payout-options")
@@ -256,26 +307,27 @@ def register_paystack_routes(
         )
 
         if not secret_in_body and not use_platform:
+            # Refused before any Paystack call. These used to leave no trace:
+            # the failure recorder sat below them, so the one account that
+            # tried and could not connect showed nothing at all.
             if kenya_currency and not kenya_business:
-                raise HTTPException(
-                    400,
-                    detail=(
-                        "Zilo-managed Paystack bank and M-Pesa payouts are for Kenyan businesses only. "
-                        "Connect your own Paystack account for this business."
-                    ),
+                # Not "connect your own Paystack account" -- the app has no
+                # way to do that, so it was a dead end, not an instruction.
+                status_code = 400
+                detail = _platform_eligibility(user)["reason"] or (
+                    "Online payments through Zilo are available to businesses registered in Kenya."
                 )
-            if kenya_currency and not platform_configured():
-                raise HTTPException(
-                    503,
-                    detail="Zilo Paystack for Kenya is not enabled on this server yet. Contact support.",
-                )
-            raise HTTPException(
-                400,
-                detail=(
+            elif kenya_currency and not platform_configured():
+                status_code = 503
+                detail = "Zilo Paystack for Kenya is not enabled on this server yet. Contact support."
+            else:
+                status_code = 400
+                detail = (
                     "For Nigeria and other supported countries, connect your own Paystack account "
                     "by entering its sk_test_ or sk_live_ secret key."
-                ),
-            )
+                )
+            await _record_connect_failure(db, user, "eligibility", detail)
+            raise HTTPException(status_code, detail=detail)
 
         try:
             if use_platform:
@@ -343,6 +395,11 @@ def register_paystack_routes(
         except PaystackApiError as e:
             await _record_connect_failure(db, user, "paystack", str(e))
             raise HTTPException(status_code=502, detail=str(e)) from e
+        except HTTPException as e:
+            # An unrecognised provider code, a missing subaccount code: raised
+            # on purpose, but just as invisible afterwards as the rest were.
+            await _record_connect_failure(db, user, "validation", str(e.detail))
+            raise
 
         if not secret:
             raise HTTPException(503, "Paystack platform secret key is not configured.")

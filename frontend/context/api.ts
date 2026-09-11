@@ -561,6 +561,11 @@ export interface PaystackConnection {
   auth_mode: string | null;
   platform_managed: boolean;
   platform_available: boolean;
+  /** Whether *this* business can use Zilo's Paystack. False outside Kenya.
+   *  Optional so a response from an older backend still type-checks. */
+  platform_eligible?: boolean;
+  eligibility_reason?: string | null;
+  country_code?: string | null;
 }
 
 export const paystackAPI = {
