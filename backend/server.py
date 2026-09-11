@@ -10753,6 +10753,30 @@ async def whatsapp_status(user = Depends(get_current_user)):
         "plan": limits.get("plan", "free"),
     }
 
+@api_router.post("/whatsapp/refresh-events")
+async def whatsapp_refresh_events(user = Depends(get_current_user)):
+    """Re-apply the webhook subscription to this business's linked WhatsApp.
+
+    A number linked before Zilo subscribed to "message.any" only sends the
+    customer's messages, so a reply the owner types on the phone never reaches
+    the app and each chat shows one side. This updates that one session; the
+    gateway restarts it to apply the change.
+    """
+    from whatsapp_service import whatsapp_owner_id
+
+    role = str(user.get("role") or "owner").lower()
+    if role not in ("owner", "manager"):
+        raise HTTPException(status_code=403, detail="Only the business owner or a manager can change WhatsApp settings.")
+    ws = get_whatsapp_service(db)
+    if not hasattr(ws, "refresh_session_webhooks"):
+        raise HTTPException(status_code=501, detail="Not supported by this WhatsApp provider.")
+    try:
+        return await ws.refresh_session_webhooks(whatsapp_owner_id(user))
+    except Exception as exc:
+        logging.exception("[whatsapp.refresh-events] failed")
+        raise HTTPException(status_code=502, detail=f"Could not update the WhatsApp session: {exc}")
+
+
 @api_router.post("/whatsapp/sync")
 async def whatsapp_sync(user = Depends(get_current_user)):
     """
@@ -11985,6 +12009,13 @@ async def evolution_webhook(request: Request):
                             await _redis_set_ts(f"{user['_id']}:{from_number}:owner_reply", _OWNER_ATTENTION_TTL)
                             logging.info(f"Owner manually replied to {from_number} — auto-reply paused 15 min")
                         return {"status": "ok"}
+                    if parsed.get("source") == "api":
+                        # Zilo's own send, echoed back by message.any before it
+                        # could be matched above. send_message() has already
+                        # stored it; storing it again would show it twice, and
+                        # treating it as the owner's would pause the AI.
+                        logging.info(f"Echo of an API send to {from_number} not matched; skipped")
+                        return {"status": "ok"}
                 
                 message_id = str(uuid.uuid4())
                 msg_doc = {
@@ -12097,9 +12128,16 @@ async def evolution_webhook(request: Request):
 
                 # For outgoing messages (typed in WhatsApp), just store — no auto-reply needed
                 if from_me:
+                    # Reaching here means no Zilo send matched it: the owner
+                    # typed this on their own phone. Step the AI back exactly as
+                    # a manual reply from the app does, or it carries on
+                    # answering over the owner. This path never ran before the
+                    # switch to message.any, so the pause only ever worked for
+                    # replies sent from inside the app.
+                    await _redis_set_ts(f"{user['_id']}:{from_number}:owner_reply", _OWNER_ATTENTION_TTL)
                     logging.info(
                         f"Auto-reply skipped for {from_number}: this message was sent by "
-                        "the connected WhatsApp account (from_me)"
+                        "the connected WhatsApp account (from_me); owner typed it, AI paused 15 min"
                     )
                     # Mark all unread incoming messages from this customer as read
                     await db.messages.update_many(
@@ -13253,7 +13291,11 @@ async def waha_webhook(request: Request):
         data["state"] = state
         data["me"] = payload.get("me") or {}
         normalized = {"event": "CONNECTION_UPDATE", "instance": session, "data": data}
-    elif event == "message":
+    elif event in ("message", "message.any"):
+        # "message" is incoming only; "message.any" also carries what the owner
+        # types on their own phone, the only way those replies reach Zilo.
+        # Sessions linked before the switch still send "message", so both
+        # take the same path.
         normalized = {"event": "MESSAGES_UPSERT", "instance": session, "data": provider_data}
     elif event == "message.ack":
         normalized = {"event": "MESSAGES_UPDATE", "instance": session, "data": provider_data}

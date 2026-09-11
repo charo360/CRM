@@ -349,7 +349,13 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             "metadata": {"provider": "zilo"},
             "webhooks": [{
                 "url": f"{webhook_base}/api/webhooks/waha",
-                "events": ["session.status", "message", "message.ack"],
+                # "message.any", not "message". The gateway's "message" is
+                # incoming only; "message.any" is fired on every message
+                # created, including what the owner types on their own phone.
+                # Subscribed to "message", a reply the owner sent from the
+                # phone never reached Zilo at all, and every such chat showed
+                # the customer's side only.
+                "events": ["session.status", "message.any", "message.ack"],
                 "hmac": {"key": WAHA_WEBHOOK_SECRET},
             }],
         }
@@ -958,6 +964,47 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
                 {"_id": customer_id, "user_id": user_id})
             removed += getattr(result, "deleted_count", 0) or 0
         return removed
+
+    async def refresh_session_webhooks(self, user_id: str) -> dict:
+        """Re-apply Zilo's webhook subscription to an already-linked session.
+
+        The subscription is written only when a number is linked, so a session
+        linked before the switch to "message.any" keeps sending incoming
+        messages only. This updates that one session's config. The gateway
+        stops and starts a running session to apply a new config, so it is
+        never run across every business at once -- only when asked.
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp.instance_name": 1}) or {}
+        instance_name = (
+            (user.get("whatsapp") or {}).get("instance_name") or self._instance_name(user_id)
+        )
+        _, base_url = await self._node_for_user(user_id)
+        config, _region = await self._session_config_for_user(user_id)
+        url = f"{base_url}/api/sessions/{quote(instance_name, safe='')}"
+
+        def _events(response) -> list:
+            try:
+                hooks = ((response.json() or {}).get("config") or {}).get("webhooks") or []
+                return sorted({e for h in hooks for e in (h.get("events") or [])})
+            except Exception:
+                return []
+
+        async with httpx.AsyncClient(timeout=45, verify=self.verify_ssl) as client:
+            before = await client.get(url, headers=self._headers())
+            events_before = _events(before) if before.status_code == 200 else []
+            response = await client.put(
+                url, headers=self._headers(), json={"name": instance_name, "config": config}
+            )
+        if response.status_code not in (200, 201):
+            return {
+                "status": "error", "http_status": response.status_code,
+                "detail": response.text[:300], "events_before": events_before,
+            }
+        return {
+            "status": "updated", "session": instance_name,
+            "events_before": events_before,
+            "events_after": sorted(config["webhooks"][0]["events"]),
+        }
 
     async def _start_session(self, base_url: str, instance_name: str, config: dict) -> dict:
         """Create/update/start a session without deleting an existing auth state."""
@@ -1883,6 +1930,10 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             "user": user, "from_number": phone or remote_jid, "body": data.get("body") or "",
             "push_name": _payload_push_name(data), "from_me": from_me,
             "evo_message_id": data.get("id") or "", "remote_jid": remote_jid,
+            # "api" when Zilo itself sent it through the gateway. Used only as
+            # a second guard against storing our own sends twice; absent on
+            # the older "message" event and not relied on alone.
+            "source": str(data.get("source") or ""),
             "phone_number_unavailable": is_lid and not bool(phone),
             "message_type": _message_type(media), "image_url": media.get("url"), "file_name": media.get("filename"),
         }
