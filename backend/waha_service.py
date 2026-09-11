@@ -965,6 +965,40 @@ class WahaWhatsAppService(EvolutionWhatsAppService):
             removed += getattr(result, "deleted_count", 0) or 0
         return removed
 
+    async def session_webhook_events(self, user_id: str) -> dict:
+        """What this session is actually subscribed to, read back from the gateway.
+
+        Read-only. refresh_session_webhooks reports the config it sent, which
+        is not proof the gateway kept it; this asks the gateway.
+        """
+        user = await self.db.users.find_one({"_id": user_id}, {"whatsapp.instance_name": 1}) or {}
+        instance_name = (
+            (user.get("whatsapp") or {}).get("instance_name") or self._instance_name(user_id)
+        )
+        _, base_url = await self._node_for_user(user_id)
+        async with httpx.AsyncClient(timeout=20, verify=self.verify_ssl) as client:
+            response = await client.get(
+                f"{base_url}/api/sessions/{quote(instance_name, safe='')}", headers=self._headers()
+            )
+        if response.status_code != 200:
+            return {"status": "error", "http_status": response.status_code}
+        data = response.json() or {}
+        engine = data.get("engine")
+        hooks = ((data.get("config") or {}).get("webhooks")) or []
+        return {
+            "status": "ok",
+            "session": instance_name,
+            "state": data.get("status"),
+            "engine": engine.get("engine") if isinstance(engine, dict) else engine,
+            "webhooks": [
+                {
+                    "host": str(h.get("url") or "").split("//")[-1].split("/")[0],
+                    "events": sorted(h.get("events") or []),
+                }
+                for h in hooks if isinstance(h, dict)
+            ],
+        }
+
     async def refresh_session_webhooks(self, user_id: str) -> dict:
         """Re-apply Zilo's webhook subscription to an already-linked session.
 

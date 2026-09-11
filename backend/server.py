@@ -10753,6 +10753,25 @@ async def whatsapp_status(user = Depends(get_current_user)):
         "plan": limits.get("plan", "free"),
     }
 
+@api_router.get("/whatsapp/session-events")
+async def whatsapp_session_events(user = Depends(get_current_user)):
+    """What this business's WhatsApp session is subscribed to, as the gateway
+    holds it. Read-only: nothing is changed and the session is not restarted."""
+    from whatsapp_service import whatsapp_owner_id
+
+    role = str(user.get("role") or "owner").lower()
+    if role not in ("owner", "manager"):
+        raise HTTPException(status_code=403, detail="Only the business owner or a manager can view WhatsApp settings.")
+    ws = get_whatsapp_service(db)
+    if not hasattr(ws, "session_webhook_events"):
+        raise HTTPException(status_code=501, detail="Not supported by this WhatsApp provider.")
+    try:
+        return await ws.session_webhook_events(whatsapp_owner_id(user))
+    except Exception as exc:
+        logging.exception("[whatsapp.session-events] failed")
+        raise HTTPException(status_code=502, detail=f"Could not read the WhatsApp session: {exc}")
+
+
 @api_router.post("/whatsapp/refresh-events")
 async def whatsapp_refresh_events(user = Depends(get_current_user)):
     """Re-apply the webhook subscription to this business's linked WhatsApp.
@@ -13283,6 +13302,29 @@ async def waha_webhook(request: Request):
     provider_data = payload.get("payload") or {}
     if not session or not isinstance(provider_data, dict):
         raise HTTPException(status_code=400, detail="Invalid WAHA webhook event")
+
+    # A short record of what the gateway actually sends, per session. Its
+    # payloads do not match its documentation, and a message it never sends,
+    # or one the parser drops, otherwise leaves only a log line on the server.
+    # No message text and no numbers: the event, whether it is the owner's
+    # own, which fields it carries, and what kind of chat it names.
+    try:
+        _chat = str(provider_data.get("chatId") or provider_data.get("from") or "")
+        await db.waha_webhook_seen.update_one(
+            {"_id": session},
+            {"$push": {"events": {"$each": [{
+                "event": event,
+                "from_me": provider_data.get("fromMe"),
+                "has_body": bool(provider_data.get("body")),
+                "source": provider_data.get("source"),
+                "chat_kind": _chat.rsplit("@", 1)[-1] if "@" in _chat else ("none" if not _chat else "other"),
+                "keys": sorted(str(k) for k in provider_data)[:30],
+                "at": datetime.utcnow(),
+            }], "$slice": -40}}},
+            upsert=True,
+        )
+    except Exception:
+        pass
 
     if event == "session.status":
         status = str(provider_data.get("status") or "").upper()
