@@ -469,9 +469,15 @@ async def _set_payment_pending(db, action: dict, user_id, customer_id) -> None:
         _user = await db.users.find_one({"_id": user_id})
         if _user:
             _cust = await db.customers.find_one({"_id": customer_id}, {"name": 1})
+            _stored = str((_cust or {}).get("name") or "").strip()
+            # A name we invented for the contact tells the owner nothing.
+            if _stored.lower() in {"whatsapp contact", ""} or _stored.lower().startswith(("contact ", "customer ")):
+                _stored = ""
             await notify_payment_claimed(
                 db, _user, order=order,
-                customer_name=payee_name or (_cust or {}).get("name") or "A customer",
+                customer_name=payee_name or _stored or "A customer",
+                amount_claimed=amount_paid,
+                currency=((_user.get("settings") or {}).get("currency") or _user.get("currency") or ""),
             )
     except Exception as exc:
         logger.warning("[ActionHandler] payment claim not announced: %s", exc)

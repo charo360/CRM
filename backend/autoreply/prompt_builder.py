@@ -102,7 +102,8 @@ PAYMENT — CRITICAL:
 - When customer provides name + amount (or says "nimetuma" / "sent" / "I've paid" / "done"):
   • intent = "payment_received"
   • fire set_payment_pending(payee_name="...", amount_paid=...) + notify_owner(reason="payment_received", message="[Name] paid [Amount]")
-  • Reply: "Thank you [name]! 🙏 Payment of [amount] received. The owner will confirm shortly."
+  • Reply: "Thank you [name]! 🙏 I've passed your payment of [amount] to the owner to check. You'll get a confirmation here as soon as it's verified."
+  • NEVER say a payment was received, confirmed or successful. You have not seen the money -- only the owner can confirm a manual payment. Do not describe the order as settled or ready as if it were paid; it goes ahead once the payment is confirmed.
 
 CATALOG LINKS:
 - Keep the customer in WhatsApp by default. Do NOT offer or append a website link just because products were shown.
@@ -401,7 +402,7 @@ _RF_ACTIONS_RENTAL = """\
 
 _RF_ACTIONS_COMMON = """\
   {"type": "tag_customer", "tag": "interested|vip|frequent_buyer|complaint"}
-  {"type": "set_payment_pending", "order_id": "latest"}
+  {"type": "set_payment_pending", "order_id": "latest", "payee_name": "the name the customer gave", "amount_paid": 1500}
   {"type": "notify_owner", "reason": "payment_received|escalation|complaint|other", "message": "context for owner"}
   {"type": "share_storefront"}
   {"type": "clear_flow"}"""
@@ -578,7 +579,7 @@ def _build_food_instructions(bc: dict) -> str:
         "  → intent=payment_received",
         "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
         "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount]')",
-        f"  → Reply: 'Thank you! 🙏 Payment received. {'Your order will be ready in ' + avg_wait + '.' if avg_wait else 'We are preparing your order!'}'",
+        f"  → Reply: 'Thank you! 🙏 I have passed your payment to the owner to check. {'Once it is confirmed, your order will be ready in ' + avg_wait + '.' if avg_wait else 'We start on your order as soon as it is confirmed.'}'",
         "",
     ]
 
@@ -2366,7 +2367,7 @@ def _build_wholesale_instructions(bc: dict) -> str:
         "  → intent=payment_received",
         "  → fire set_payment_pending(payee_name='[name]', amount_paid=[amount])",
         "  → fire notify_owner(reason='payment_received', message='[Name] / [Business] paid [Amount] — wholesale order [total items] items')",
-        "  → Reply: 'Thank you! 🙏 Payment received. Your order will be [delivered/ready for pickup] on [date]. We'll send confirmation.'",
+        "  → Reply: 'Thank you! 🙏 I've passed your payment to the owner to check. Once it's confirmed, your order will be [delivered/ready for pickup] on [date].'",
         "",
         "ORDER MANAGEMENT:",
         "- 'my order' / 'order status' → show order summary and fulfilment date.",
@@ -2632,7 +2633,7 @@ def _build_retail_instructions(bc: dict) -> str:
         "  → intent=payment_received",
         "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
         "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount] — retail order')",
-        "  → Reply: 'Thank you [name]! 🙏 Payment received. Your order will be [delivered/ready for pickup] as arranged.'",
+        "  → Reply: 'Thank you [name]! 🙏 I've passed your payment to the owner to check. Once it's confirmed, your order will be [delivered/ready for pickup] as arranged.'",
         "",
         "ORDER MANAGEMENT:",
         "- 'my order' / 'order status' → show order summary + fulfilment details.",
@@ -2774,7 +2775,7 @@ def _build_bakery_instructions(bc: dict) -> str:
         "  → intent=payment_received",
         "  → fire set_payment_pending(payee_name='...', amount_paid=...)",
         "  → fire notify_owner(reason='payment_received', message='[Name] paid [Amount] — [Item] for [date]')",
-        "  → Reply: 'Thank you [name]! 🙏 Payment received. We'll have your [item] ready for [pickup/delivery date]. We'll notify you when it's ready!'",
+        "  → Reply: 'Thank you [name]! 🙏 I've passed your payment to the owner to check. Once it's confirmed, we'll have your [item] ready for [pickup/delivery date].'",
         "",
         "ORDER MANAGEMENT:",
         "- 'my order' / 'order status' / 'is it ready?' → show order summary including pickup/delivery date from notes.",

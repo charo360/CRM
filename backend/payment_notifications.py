@@ -121,10 +121,21 @@ async def notify_payment_claimed(
     *,
     order: Optional[Dict[str, Any]],
     customer_name: str,
+    amount_claimed: Any = None,
+    currency: str = "",
 ) -> None:
-    """A customer says they have paid by hand — someone has to check."""
+    """A customer says they have paid by hand — someone has to check.
+
+    The alert used to read "WhatsApp contact says they have paid —  3,000":
+    no name, because the customer record had none and the name they gave was
+    never passed on, and no currency, because orders do not carry one. The
+    owner could not tell who was claiming what.
+    """
     order_number = (order or {}).get("order_number") or ""
-    total = _money((order or {}).get("currency") or "", (order or {}).get("total_amount") or 0)
+    cur = currency or (order or {}).get("currency") or ""
+    order_total = (order or {}).get("total_amount") or (order or {}).get("total") or 0
+    claimed = amount_claimed if amount_claimed not in (None, "") else order_total
+    total = _money(cur, claimed).strip()
     try:
         from whatsapp_service import get_whatsapp_service, owner_whatsapp_number
 
@@ -134,6 +145,12 @@ async def notify_payment_claimed(
         lines = [f"🧾 *{customer_name} says they have paid* — {total}"]
         if order_number:
             lines.append(f"Order: *{order_number}*")
+        try:
+            if amount_claimed not in (None, "") and order_total and \
+                    abs(float(str(amount_claimed).replace(",", "")) - float(order_total)) > 0.5:
+                lines.append(f"The order total is {_money(cur, order_total).strip()} -- check the difference.")
+        except (TypeError, ValueError):
+            pass
         lines += ["", "Not confirmed yet. Check the payment, then mark it paid in Zilo."]
         await get_whatsapp_service(db).send_message(
             user_id=str(user["_id"]),

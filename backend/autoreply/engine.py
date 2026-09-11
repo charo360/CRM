@@ -363,6 +363,20 @@ async def process_message(
                 logger.warning("[AutoReplyV2] Could not add storefront link: %s", exc)
 
         reply_text = (response_data.get("reply") or "").strip() or FALLBACK_REPLY
+        # A payment is not received because the customer says so. The model
+        # was told to say "Payment received" and embellished past even that,
+        # so the reply is checked here: a claim that an unverified payment
+        # arrived is replaced with what is true -- it has gone to the owner.
+        try:
+            from payment_claims import guard_payment_claim
+            reply_text = await guard_payment_claim(
+                db, reply_text,
+                actions=actions, user_id=user_id, customer_id=customer_id,
+                customer_message=message,
+                currency=(ctx.get("business_config") or {}).get("currency", ""),
+            )
+        except Exception as exc:
+            logger.warning("[AutoReplyV2] payment-claim guard skipped: %s", exc)
         if action_results.get("order_number"):
             reply_text += f"\n\n🧾 *Order #:* {action_results['order_number']}"
             # Businesses that set up online payment can be paid here and now.
