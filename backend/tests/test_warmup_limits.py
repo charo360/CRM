@@ -188,3 +188,40 @@ def test_a_send_stopped_by_the_ramp_is_paused_not_failed():
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                  and n.name == "process_due_and_stalled_broadcasts")
     assert '"paused"' in sched, "nothing ever picks a paused broadcast back up"
+
+
+# ------------------------------------------- from the link, not a reconnect
+
+def test_the_ramp_counts_from_when_the_number_was_linked_not_the_last_reconnect():
+    """Every reconnect rewrites connected_at; a number linked six days ago
+    that reconnected this morning is not a new number."""
+    from warmup_limits import linked_since
+
+    linked = NOW - timedelta(days=6)
+    reconnected = NOW - timedelta(minutes=5)
+    user = {"whatsapp": {"created_at": linked, "connected_at": reconnected}}
+    assert linked_since(user) == linked
+    assert warmup_daily_cap(linked_since(user), NOW) > WARMUP_SCHEDULE[0][1], (
+        "a reconnect put an established number back on day one"
+    )
+
+
+def test_an_account_without_a_link_date_falls_back_to_connected_at():
+    from warmup_limits import linked_since
+
+    assert linked_since({"whatsapp": {"connected_at": NOW}}) == NOW
+    assert linked_since({}) is None
+    assert linked_since(None) is None
+
+
+@pytest.mark.parametrize("path,fn", [("warmup_limits.py", "warmup_status"),
+                                     ("whatsapp_service.py", "check_message_limit")])
+def test_both_readers_count_from_the_link_date(path, fn):
+    import ast
+
+    src = (BACKEND / path).read_text(encoding="utf-8-sig", errors="replace")
+    body = next(ast.get_source_segment(src, n) for n in ast.walk(ast.parse(src))
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn)
+    assert "linked_since(" in body, (
+        f"{path}:{fn} still counts the ramp from the last reconnect"
+    )

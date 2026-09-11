@@ -582,7 +582,10 @@ class WhatsAppService:
             # accounts that just connected -- this business had already sent 43
             # messages in a day, nearly all of them replies.
             from warmup_limits import effective_daily_cap
-            _linked_at = ((user or {}).get("whatsapp") or {}).get("connected_at")
+            # From when the number was linked, not the last reconnect --
+            # every reconnect rewrites connected_at.
+            from warmup_limits import linked_since
+            _linked_at = linked_since(user)
             bulk_daily_cap = effective_daily_cap(daily_cap, _linked_at)
             bulk_daily_sent = await self.db.messages.count_documents({
                 "user_id": business_id,

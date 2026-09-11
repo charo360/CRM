@@ -68,6 +68,22 @@ def warmup_daily_cap(connected_at, now: Optional[datetime] = None) -> Optional[i
     return None
 
 
+def linked_since(user: dict):
+    """When this business's current WhatsApp number was linked.
+
+    Not connected_at. That is rewritten every time the session comes up -- a
+    deploy, a network blip, a config change -- so counting from it restarted
+    the ramp on every reconnect. Two accounts linked six days earlier were back
+    on day one's twenty for having reconnected that morning.
+
+    created_at is written only when a number is linked, by pairing code or QR,
+    so it moves when a genuinely new link starts and at no other time. An
+    account without one falls back to connected_at, as before.
+    """
+    whatsapp = (user or {}).get("whatsapp") or {}
+    return whatsapp.get("created_at") or whatsapp.get("connected_at")
+
+
 def effective_daily_cap(plan_cap: int, connected_at, now: Optional[datetime] = None) -> int:
     """The smaller of the plan's daily cap and the warm-up ceiling."""
     warm = warmup_daily_cap(connected_at, now)
@@ -89,7 +105,7 @@ async def warmup_status(db, user: dict, plan_daily_cap: int,
     accounts, which is nearly all of them, pay nothing for this.
     """
     now = now or datetime.utcnow()
-    linked_at = ((user or {}).get("whatsapp") or {}).get("connected_at")
+    linked_at = linked_since(user)
     cap = warmup_daily_cap(linked_at, now)
     if cap is None:
         return None
