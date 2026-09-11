@@ -12326,20 +12326,12 @@ async def evolution_webhook(request: Request):
                     if _bk_data.get("faqs"):
                         _bk_parts.append(f"FAQs: {_bk_data['faqs']}")
                 # Inject structured payment methods from user doc
-                _raw_pm = user.get("payment_methods", [])
-                if _raw_pm:
-                    _pm_lines = []
-                    for _pm in _raw_pm:
-                        if isinstance(_pm, dict):
-                            _line = _pm.get("name", "")
-                            if _pm.get("details"):
-                                _line += f": {_pm['details']}"
-                        else:
-                            _line = str(_pm)
-                        if _line.strip():
-                            _pm_lines.append(f"  - {_line}")
-                    if _pm_lines:
-                        _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
+                # Only methods a customer can act on -- one with no details
+                # attached is not a way to pay.
+                from payment_methods import payment_method_lines as _pm_lines_for
+                _pm_lines = [f"  - {_l}" for _l in _pm_lines_for(user.get("payment_methods"))]
+                if _pm_lines:
+                    _bk_parts.append("Payment methods accepted:\n" + "\n".join(_pm_lines))
                 _business_knowledge = "\n".join(_bk_parts) if _bk_parts else ""
 
                 # Currency: settings sub-doc → top-level user doc → phone-number detection → USD
@@ -12357,11 +12349,10 @@ async def evolution_webhook(request: Request):
                     or _user_settings.get("business_type")
                     or user.get("business_type", "")
                 )
-                _raw_pm_ctx = user.get("payment_methods") or []
-                _payment_methods_ctx = [
-                    m if isinstance(m, dict) else {"name": str(m), "details": ""}
-                    for m in _raw_pm_ctx
-                ]
+                # Filtered the same way: the payment and sales agents repeat
+                # this list to customers.
+                from payment_methods import usable_payment_methods as _usable_pm
+                _payment_methods_ctx = _usable_pm(user.get("payment_methods"))
                 agent_context = {
                     "currency": currency,
                     "customer_id": customer_id,

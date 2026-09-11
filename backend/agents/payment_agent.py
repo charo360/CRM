@@ -50,9 +50,12 @@ class PaymentAgent:
                 }
 
         # Use structured payment_methods from context (preferred — accurate, no regex guessing)
-        structured_pm = context.get("payment_methods", [])
+        # Filtered here too: this agent can be reached with a context that
+        # did not come through server.py's already-filtered list.
+        from payment_methods import usable_payment_methods
+        structured_pm = usable_payment_methods(context.get("payment_methods", []))
         if structured_pm:
-            payment_methods = [pm.get("name", "") for pm in structured_pm if isinstance(pm, dict) and pm.get("name")]
+            payment_methods = [pm.get("name", "") for pm in structured_pm if pm.get("name")]
         else:
             # Fallback: regex extraction from business_knowledge text
             payment_methods = self._extract_payment_methods(business_knowledge)

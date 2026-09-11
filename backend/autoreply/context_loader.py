@@ -321,19 +321,12 @@ def _build_business_config(user: dict, settings: dict, business_type: str) -> Di
     # Currency: settings → user doc → fallback
     currency = settings.get("currency") or user.get("currency", "KES")
 
-    # Payment methods → list of human-readable strings
-    raw_pm = user.get("payment_methods") or []
-    payment_methods: List[str] = []
-    for pm in raw_pm:
-        if isinstance(pm, dict):
-            line = pm.get("name", "")
-            if pm.get("details"):
-                line += f": {pm['details']}"
-        else:
-            line = str(pm)
-        line = line.strip()
-        if line:
-            payment_methods.append(line)
+    # Payment methods → list of human-readable strings. Only ones a customer
+    # can act on: "Bank Transfer" with no account, left over from signup, is
+    # not a way to pay, and offering it was worse than saying nothing. With
+    # none left, the prompt tells the customer the owner will share details.
+    from payment_methods import payment_method_lines
+    payment_methods: List[str] = payment_method_lines(user.get("payment_methods"))
 
     bk = user.get("business_knowledge") or {}
 

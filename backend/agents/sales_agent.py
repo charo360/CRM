@@ -8,21 +8,14 @@ logger = logging.getLogger(__name__)
 
 
 def _payment_methods_to_bullets(raw_pm: list) -> List[str]:
-    """Turn user.payment_methods (strings or {name,details}) into WhatsApp bullet lines."""
-    lines: List[str] = []
-    if not raw_pm:
-        return lines
-    for pm in raw_pm:
-        if isinstance(pm, dict):
-            n = (pm.get("name") or "").strip()
-            d = (pm.get("details") or "").strip()
-            if n and d:
-                lines.append(f"  • {n}: {d}")
-            elif n:
-                lines.append(f"  • {n}")
-        elif isinstance(pm, str) and pm.strip():
-            lines.append(f"  • {pm.strip()}")
-    return lines
+    """Turn user.payment_methods into WhatsApp bullet lines -- only the ones a
+    customer can actually pay with.
+
+    This path falls back to reading the owner's list straight from the
+    database, so it filters here rather than trusting whatever came upstream.
+    """
+    from payment_methods import payment_method_lines
+    return [f"  • {line}" for line in payment_method_lines(raw_pm)]
 
 
 class SalesAgent(BaseAgent):
