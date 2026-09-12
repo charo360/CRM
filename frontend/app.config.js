@@ -27,7 +27,9 @@ export default {
     android: {
       googleServicesFile: "./google-services.json",
       package: "com.zilo.reply",
-      versionCode: 17,
+      // Google Play requires every submitted Android bundle to use a higher
+      // version code than the currently published one.
+      versionCode: 18,
       adaptiveIcon: {
         foregroundImage: "./assets/images/adaptive-icon.png",
         backgroundColor: "#2DB843"
