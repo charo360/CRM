@@ -60,7 +60,8 @@ export default function AdminAnalyticsPage() {
   const [period, setPeriod] = useState<MetricsPeriod>("all");
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
-  const [totalEarnings, setTotalEarnings] = useState(0);
+  const [platformRevenue, setPlatformRevenue] = useState<Array<{ currency: string; amount: number }>>([]);
+  const [merchantSales, setMerchantSales] = useState<Array<{ currency: string; amount: number; sales_count: number }>>([]);
   const [salesCount, setSalesCount] = useState(0);
   const [metricsUsers, setMetricsUsers] = useState<{ total: number; subscribed: number; setup: number } | null>(null);
 
@@ -80,7 +81,8 @@ export default function AdminAnalyticsPage() {
       .getMetrics(query)
       .then((m) => {
         if (!alive) return;
-        setTotalEarnings(m.total_earnings || 0);
+        setPlatformRevenue(m.platform_revenue || []);
+        setMerchantSales(m.merchant_sales || []);
         setSalesCount(m.sales_count || 0);
         setMetricsUsers({
           total: m.total_users || 0,
@@ -106,7 +108,21 @@ export default function AdminAnalyticsPage() {
   const owners = useMemo(() => users.filter((u) => !u.business_id).length, [users]);
   const subPct = total ? Math.round((subscribed / total) * 100) : 0;
   const setupPct = total ? Math.round((setupDone / total) * 100) : 0;
-  const earningsValue = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(totalEarnings || 0);
+  const money = (amount: number, currency: string) => {
+    try {
+      return new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2 }).format(amount);
+    } catch {
+      return `${currency} ${amount.toLocaleString()}`;
+    }
+  };
+  const revenueValue = platformRevenue.length === 0
+    ? "$0.00"
+    : platformRevenue.length === 1
+      ? money(platformRevenue[0].amount, platformRevenue[0].currency)
+      : "Multiple currencies";
+  const merchantSalesSub = merchantSales.length === 0
+    ? "No recorded sales"
+    : merchantSales.map((row) => `${money(row.amount, row.currency)} ${row.currency === "UNSPECIFIED" ? "(currency missing)" : ""}`).join(" · ");
 
   // Signups by month (last 6)
   const byMonth = useMemo(() => {
@@ -166,11 +182,21 @@ export default function AdminAnalyticsPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
-        <StatCard label="Total earnings" value={metricsLoading ? "—" : earningsValue} sub={metricsLoading ? undefined : `${salesCount} sales`} icon={DollarSign} color="bg-emerald-100 text-emerald-700" />
+        <StatCard label="Zilo revenue" value={metricsLoading ? "—" : revenueValue} sub={metricsLoading ? undefined : "Confirmed subscription & credit payments"} icon={DollarSign} color="bg-emerald-100 text-emerald-700" />
         <StatCard label="Total accounts" value={loading || metricsLoading ? "—" : total} icon={Users} color="bg-slate-100 text-slate-600" />
         <StatCard label="Subscribed" value={loading || metricsLoading ? "—" : subscribed} sub={`${subPct}% of accounts`} icon={BadgeCheck} color="bg-emerald-100 text-emerald-700" />
         <StatCard label="Setup complete" value={loading || metricsLoading ? "—" : setupDone} sub={`${setupPct}% of accounts`} icon={Shield} color="bg-indigo-100 text-indigo-700" />
         <StatCard label="Business owners" value={loading ? "—" : owners} icon={Building2} color="bg-amber-100 text-amber-700" />
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-5">
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Merchant sales volume</p>
+        <p className="mt-1 text-sm text-slate-600">
+          {metricsLoading ? "Loading…" : merchantSalesSub}
+        </p>
+        <p className="mt-2 text-xs text-slate-400">
+          {salesCount} recorded sale{salesCount === 1 ? "" : "s"}. This is merchant order value, not Zilo revenue.
+        </p>
       </div>
 
       {/* Charts row */}

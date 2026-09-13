@@ -869,6 +869,8 @@ export const adminApi = {
       setup_done_users: number;
       total_earnings: number;
       sales_count: number;
+      platform_revenue: Array<{ currency: string; amount: number }>;
+      merchant_sales: Array<{ currency: string; amount: number; sales_count: number }>;
       start?: string | null;
       end?: string | null;
     };

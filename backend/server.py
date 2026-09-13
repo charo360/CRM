@@ -9521,6 +9521,19 @@ async def revenuecat_subscription_webhook(request: Request):
         "expiration_at_ms": event_expiration_at_ms or None,
         "expiration_reason": event.get("expiration_reason") or None,
         "period_type": event.get("period_type") or None,
+        # RevenueCat reports the purchase in the customer's charged currency.
+        # Retain it in the platform ledger; previously it was discarded, which
+        # made truthful subscription revenue reporting impossible.
+        "price": float(
+            event.get("price_in_purchased_currency")
+            or event.get("price")
+            or 0
+        ),
+        "currency": str(
+            event.get("currency")
+            or event.get("currency_code")
+            or ""
+        ).upper() or None,
         "received_at": datetime.utcnow(),
     }
     await db.revenuecat_webhook_events.update_one(
@@ -18250,22 +18263,74 @@ async def admin_metrics(
     subscribed_users = await db.users.count_documents({**user_query, "subscription_active": True})
     setup_done_users = await db.users.count_documents({**user_query, "setup_complete": True})
 
-    # Sum revenue from sales.amount (fallback to total_amount if present in some docs)
-    pipeline = [
+    # `sales` belongs to merchants. It must never be presented as Zilo's
+    # earnings: it can contain test/manual records and amounts in different
+    # currencies. Keep it as a separate, per-currency marketplace metric.
+    merchant_sales_pipeline = [
         {"$match": sales_query} if sales_query else {"$match": {}},
-        {"$project": {"value": {"$ifNull": ["$amount", {"$ifNull": ["$total_amount", 0]}]}}},
-        {"$group": {"_id": None, "sum": {"$sum": "$value"}, "count": {"$sum": 1}}},
+        {"$project": {
+            "value": {"$ifNull": ["$amount", {"$ifNull": ["$total_amount", 0]}]},
+            "currency": {"$ifNull": ["$currency", "Unspecified"]},
+        }},
+        {"$group": {"_id": "$currency", "total": {"$sum": "$value"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
     ]
-    rows = await db.sales.aggregate(pipeline).to_list(1)
-    total_earnings = float((rows[0].get("sum") if rows else 0) or 0)
-    sales_count = int((rows[0].get("count") if rows else 0) or 0)
+    merchant_rows = await db.sales.aggregate(merchant_sales_pipeline).to_list(100)
+    merchant_sales = [
+        {
+            "currency": str(row.get("_id") or "Unspecified").upper(),
+            "amount": round(float(row.get("total") or 0), 2),
+            "sales_count": int(row.get("count") or 0),
+        }
+        for row in merchant_rows
+    ]
+    sales_count = sum(row["sales_count"] for row in merchant_sales)
+
+    # Platform revenue comes only from payment ledgers, never merchant sales.
+    # Stripe stores amounts in the currency's minor unit; RevenueCat events
+    # carry their purchase price from now on. Credit purchases have a fixed
+    # USD product price and are recorded in `transactions`.
+    payment_query = {"status": {"$in": ["paid", "succeeded"]}}
+    if start_dt or end_dt:
+        payment_query["recorded_at"] = sales_query["created_at"]
+    stripe_rows = await db.subscription_payments.aggregate([
+        {"$match": payment_query},
+        {"$group": {"_id": {"$toUpper": {"$ifNull": ["$currency", "USD"]}}, "minor": {"$sum": "$amount_paid"}}},
+    ]).to_list(100)
+    platform_by_currency: dict[str, float] = {
+        str(row.get("_id") or "USD"): float(row.get("minor") or 0) / 100
+        for row in stripe_rows
+    }
+
+    credit_query = {"type": "credit_topup", "status": "success"}
+    if start_dt or end_dt:
+        credit_query["created_at"] = sales_query["created_at"]
+    async for credit in db.transactions.find(credit_query, {"bundle_id": 1}):
+        bundle = CREDIT_BUNDLES.get(str(credit.get("bundle_id") or ""))
+        if bundle:
+            platform_by_currency["USD"] = platform_by_currency.get("USD", 0) + float(bundle["price_usd"])
+
+    rc_query = {"event_type": {"$in": ["INITIAL_PURCHASE", "RENEWAL", "PRODUCT_CHANGE"]}, "price": {"$gt": 0}}
+    if start_dt or end_dt:
+        rc_query["received_at"] = sales_query["created_at"]
+    async for event in db.revenuecat_webhook_events.find(rc_query, {"price": 1, "currency": 1}):
+        currency = str(event.get("currency") or "USD").upper()
+        platform_by_currency[currency] = platform_by_currency.get(currency, 0) + float(event.get("price") or 0)
+    platform_revenue = [
+        {"currency": currency, "amount": round(amount, 2)}
+        for currency, amount in sorted(platform_by_currency.items())
+    ]
 
     return {
         "period": p,
         "total_users": total_users,
         "subscribed_users": subscribed_users,
         "setup_done_users": setup_done_users,
-        "total_earnings": round(total_earnings, 2),
+        # Kept temporarily for older clients; it is deliberately no longer
+        # populated from merchant sales.
+        "total_earnings": 0,
+        "platform_revenue": platform_revenue,
+        "merchant_sales": merchant_sales,
         "sales_count": sales_count,
         "start": start_dt.isoformat() if start_dt else None,
         "end": end_dt.isoformat() if end_dt else None,
