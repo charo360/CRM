@@ -41,7 +41,7 @@
     "submit": {
         "production": {
             "android": {
-                "serviceAccountKeyPath": "./google-service-account.json",
+                "serviceAccountKeyPath": "../backend/google-credentials.json",
                 "track": "production"
             }
         }
