@@ -269,8 +269,8 @@ async def build_entitlements(db, user: dict) -> Dict[str, Any]:
 PRODUCT_CATALOG_LIMITS: Dict[str, Optional[int]] = {
     "free": 5,
     "trial": 20,
-    "starter": 20,
-    "standard": 50,
+    "starter": 50,
+    "standard": 100,
     "pro": None,
 }
 
