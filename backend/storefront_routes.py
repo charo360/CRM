@@ -1193,6 +1193,63 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             raise HTTPException(404, "Order not found")
         return _order_payload(order)
 
+    @api_router.post("/storefront/public/orders/{order_token}/payment/verify")
+    async def verify_public_order_payment(order_token: str, body: dict):
+        """Confirm a returned Paystack checkout when its webhook is delayed.
+
+        Paystack normally tells Zilo about a completed charge by webhook.  The
+        buyer's browser is also sent back with the transaction reference,
+        though, and it is a much better recovery path than leaving a paid
+        buyer looking at an indefinite spinner.  The public order token is
+        required and the reference must be the one Zilo created for that exact
+        order, so this endpoint cannot be used to probe arbitrary payments.
+        """
+        order = await db.orders.find_one({"public_token": _text(order_token, 128)})
+        if not order:
+            raise HTTPException(404, "Order not found")
+
+        if _text(order.get("payment_status"), 32).lower() == "paid":
+            return _order_payload(order)
+        if _text(order.get("payment_provider"), 32).lower() != "paystack":
+            raise HTTPException(400, "This order does not use Paystack")
+
+        reference = _text(body.get("reference"), 128)
+        expected_reference = _text(order.get("payment_reference"), 128)
+        if not reference or not expected_reference or reference != expected_reference:
+            raise HTTPException(400, "This payment reference does not match the order")
+
+        business = await db.users.find_one({"_id": order.get("user_id")})
+        if not business:
+            raise HTTPException(404, "Business account not found")
+
+        # Import here so the public catalog can still load in lightweight test
+        # environments that intentionally stub payment providers.
+        from paystack_auth import secret_key_from_doc
+        from paystack_client import PaystackApiError, PaystackClient
+        from paystack_service import parse_webhook_event, process_charge_success
+
+        secret = secret_key_from_doc(business)
+        if not secret:
+            raise HTTPException(503, "Online payments are not available for this business")
+        try:
+            transaction = await PaystackClient(secret).verify_transaction(reference)
+        except PaystackApiError as exc:
+            logger.warning("[storefront] Paystack return verification failed: %s", exc)
+            raise HTTPException(502, "Could not confirm the payment yet. Please try again shortly.") from exc
+
+        if (transaction.get("reference") or "").strip() != reference:
+            raise HTTPException(502, "Paystack returned an unexpected payment reference")
+        if (transaction.get("status") or "").lower() == "success":
+            parsed = parse_webhook_event({"event": "charge.success", "data": transaction})
+            await process_charge_success(
+                db,
+                parsed,
+                raw_payload={"source": "storefront_return_verify", "data": transaction},
+            )
+
+        refreshed = await db.orders.find_one({"_id": order["_id"]}) or order
+        return _order_payload(refreshed)
+
     @api_router.post("/storefront/public/orders/{order_token}/payment")
     async def retry_public_order_payment(order_token: str):
         order = await db.orders.find_one({"public_token": _text(order_token, 128)})

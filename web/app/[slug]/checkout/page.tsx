@@ -19,11 +19,15 @@ export default function StoreCheckoutStatusPage() {
   const { slug } = useParams<{ slug: string }>();
   const query = useSearchParams();
   const token = query.get("order") || "";
+  // Paystack appends the reference to its callback URL.  It has used both
+  // names across checkout variants, so accept either one.
+  const paymentReference = query.get("reference") || query.get("trxref") || "";
   const cancelled = query.get("cancelled") === "1";
   const [order, setOrder] = useState<PublicOrder | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
+  const [verifyingReturn, setVerifyingReturn] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!token) return;
@@ -41,6 +45,40 @@ export default function StoreCheckoutStatusPage() {
   }, [token]);
 
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    if (!token || !paymentReference || cancelled) return;
+    let active = true;
+    async function verifyReturn() {
+      setVerifyingReturn(true);
+      try {
+        const response = await fetch(
+          `${API_BASE}/storefront/public/orders/${encodeURIComponent(token)}/payment/verify`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reference: paymentReference }),
+          },
+        );
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(body.detail || "Could not confirm the payment yet.");
+        if (active) {
+          setOrder(body);
+          setError("");
+        }
+      } catch (reason: unknown) {
+        // Keep polling as well: a webhook can still arrive just after the
+        // browser comes back from Paystack.
+        if (active) setError(reason instanceof Error ? reason.message : "Could not confirm the payment yet.");
+      } finally {
+        if (active) {
+          setVerifyingReturn(false);
+          setLoading(false);
+        }
+      }
+    }
+    void verifyReturn();
+    return () => { active = false; };
+  }, [cancelled, paymentReference, token]);
   useEffect(() => {
     if (!token || !order || order.payment_status.toLowerCase() === "paid") return;
     const timer = window.setInterval(() => void refresh(), 4000);
@@ -67,10 +105,10 @@ export default function StoreCheckoutStatusPage() {
 
   if (!token) return <StatusCard icon="error" title="Order link missing" message="Please return to the catalog and place your order again." />;
   if (loading) return <main className="min-h-screen grid place-items-center bg-slate-50"><Loader2 className="animate-spin text-brand-dark" size={30} /></main>;
-  if (error || !order) return <StatusCard icon="error" title="Could not find this order" message={error || "The order link is invalid."} />;
+  if (!order) return <StatusCard icon="error" title="Could not find this order" message={error || "The order link is invalid."} />;
   const paid = order.payment_status.toLowerCase() === "paid";
 
-  return <main className="min-h-screen grid place-items-center bg-slate-50 p-5"><div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">{paid ? <CheckCircle2 className="mx-auto text-emerald-500" size={48} /> : <Loader2 className="mx-auto animate-spin text-brand-dark" size={42} />}<h1 className="mt-5 text-xl font-bold text-slate-800">{paid ? "Payment confirmed" : cancelled ? "Payment was not completed" : "Confirming your payment"}</h1><p className="mt-2 text-sm leading-relaxed text-slate-500">{paid ? "Thank you. The business has received your order and payment." : cancelled ? "Your order is saved. You can try secure payment again when you are ready." : "Your order is saved. This page updates automatically as soon as the payment provider confirms it."}</p><div className="mt-6 rounded-xl bg-slate-50 p-4 text-left text-sm"><div className="flex justify-between gap-4"><span className="text-slate-500">Order</span><span className="font-medium">{order.order_number}</span></div><div className="mt-2 flex justify-between gap-4"><span className="text-slate-500">Total</span><span className="font-semibold">{formatCurrency(order.total_amount, order.currency)}</span></div></div>{!paid && <><button type="button" onClick={() => void refresh()} className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-brand-dark"><RefreshCw size={15} />Check status</button>{cancelled && order.payment_provider !== "manual" && <button type="button" disabled={retrying} onClick={() => void retryPayment()} className="mt-4 w-full rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">{retrying ? "Starting payment…" : "Try secure payment again"}</button>}</>}<a href={`/${encodeURIComponent(slug)}`} className="mt-6 block text-sm font-medium text-slate-500 hover:text-brand-dark">Back to catalog</a></div></main>;
+  return <main className="min-h-screen grid place-items-center bg-slate-50 p-5"><div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">{paid ? <CheckCircle2 className="mx-auto text-emerald-500" size={48} /> : <Loader2 className="mx-auto animate-spin text-brand-dark" size={42} />}<h1 className="mt-5 text-xl font-bold text-slate-800">{paid ? "Payment confirmed" : cancelled ? "Payment was not completed" : verifyingReturn ? "Confirming your payment" : "Waiting for payment confirmation"}</h1><p className="mt-2 text-sm leading-relaxed text-slate-500">{paid ? "Thank you. The business has received your order and payment." : cancelled ? "Your order is saved. You can try secure payment again when you are ready." : verifyingReturn ? "Checking the secure Paystack payment now…" : error || "We are still waiting for the payment provider. You can check again below."}</p><div className="mt-6 rounded-xl bg-slate-50 p-4 text-left text-sm"><div className="flex justify-between gap-4"><span className="text-slate-500">Order</span><span className="font-medium">{order.order_number}</span></div><div className="mt-2 flex justify-between gap-4"><span className="text-slate-500">Total</span><span className="font-semibold">{formatCurrency(order.total_amount, order.currency)}</span></div></div>{!paid && <><button type="button" onClick={() => void refresh()} className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-brand-dark"><RefreshCw size={15} />Check status</button>{cancelled && order.payment_provider !== "manual" && <button type="button" disabled={retrying} onClick={() => void retryPayment()} className="mt-4 w-full rounded-xl bg-brand-dark py-3 text-sm font-bold text-white disabled:opacity-60">{retrying ? "Starting payment…" : "Try secure payment again"}</button>}</>}<a href={`/${encodeURIComponent(slug)}`} className="mt-6 block text-sm font-medium text-slate-500 hover:text-brand-dark">Back to catalog</a></div></main>;
 }
 
 function StatusCard({ icon, title, message }: { icon: "error"; title: string; message: string }) {
