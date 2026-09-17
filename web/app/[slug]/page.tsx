@@ -426,7 +426,7 @@ export default function PublicStorePage() {
 
   return (
     <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><p className="text-xs font-semibold uppercase tracking-[0.2em] text-brand-light">Zilo catalog</p><h1 className="mt-1 text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p>{store.opening_hours && <p className="mt-2 flex items-start gap-1.5 text-sm text-white/70"><Clock size={15} className="mt-0.5 shrink-0" />{store.opening_hours}</p>}
+      <header className="bg-brand-ink text-white"><div className="mx-auto max-w-6xl px-4 py-5 sm:px-6 sm:py-7"><h1 className="text-2xl font-bold sm:text-3xl">{store.business_name}</h1><p className="mt-1.5 text-sm text-white/70">Browse, order, and pay securely.</p>{store.opening_hours && <p className="mt-2 flex items-start gap-1.5 text-sm text-white/70"><Clock size={15} className="mt-0.5 shrink-0" />{store.opening_hours}</p>}
         {takesTables && <button
           type="button"
           onClick={() => { setBookingFor(TABLE); setBookingDate(""); setBookingTime(""); setBookingError(""); }}
