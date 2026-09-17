@@ -1278,3 +1278,87 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
             {"$set": {"payment_provider": payment.get("provider") or "manual", "payment_reference": payment.get("reference") or ""}},
         )
         return {**_order_payload(order), **payment}
+
+    @api_router.post("/storefront/orders/{order_id}/payment-link")
+    async def send_revised_order_payment_link(order_id: str, body: dict, user=Depends(get_current_user)):
+        """Issue a fresh Paystack link after a WhatsApp negotiation.
+
+        The merchant chooses the agreed total in Sales.  A new checkout
+        reference replaces the previous pending attempt, so the WhatsApp
+        message always names the latest agreed amount.
+        """
+        business_id = str(user.get("business_id", user["_id"]))
+        order = await db.orders.find_one({"_id": order_id, "user_id": business_id})
+        if not order:
+            try:
+                from bson import ObjectId
+
+                order = await db.orders.find_one({"_id": ObjectId(order_id), "user_id": business_id})
+            except Exception:
+                order = None
+        if not order:
+            raise HTTPException(404, "Order not found")
+        if _text(order.get("payment_status"), 32).lower() == "paid":
+            raise HTTPException(409, "This order has already been paid")
+
+        try:
+            agreed_total = round(float(body.get("amount")), 2)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Enter the agreed payment amount")
+        if not (0 < agreed_total <= 10_000_000):
+            raise HTTPException(400, "Enter a valid payment amount")
+
+        business = await db.users.find_one({"_id": business_id})
+        if not business:
+            raise HTTPException(404, "Business account not found")
+        if not _selected_provider(business):
+            raise HTTPException(409, "Set up online payments before sending a payment link")
+        if not _text(order.get("customer_email"), 254):
+            raise HTTPException(409, "This customer needs an email address for secure payment")
+
+        now = datetime.utcnow()
+        revision = int(order.get("payment_link_revision") or 0) + 1
+        # The line items remain the negotiated order record; total_amount is
+        # the agreed final amount that Paystack must charge.
+        working_order = {**order, "total_amount": agreed_total, "total": agreed_total}
+        payment = await _start_online_payment(db, business, working_order)
+        if payment.get("payment_action") != "redirect" or not payment.get("checkout_url"):
+            raise HTTPException(502, "Could not create a secure payment link")
+
+        await db.orders.update_one(
+            {"_id": order["_id"]},
+            {"$set": {
+                "total_amount": agreed_total,
+                "total": agreed_total,
+                "price": agreed_total / max(int(order.get("quantity") or 1), 1),
+                "payment_status": "Pending",
+                "payment_provider": "paystack",
+                "payment_reference": payment.get("reference") or "",
+                "payment_link_revision": revision,
+                "payment_link_sent_at": now,
+                "negotiated_at": now,
+            }},
+        )
+        refreshed = await db.orders.find_one({"_id": order["_id"]}) or working_order
+
+        phone = _text(order.get("customer_phone"), 40)
+        if phone:
+            try:
+                from whatsapp_service import get_whatsapp_service
+
+                total_text = f"{_currency(business)} {agreed_total:,.2f}".replace(".00", "")
+                await get_whatsapp_service(db).send_message(
+                    user_id=business_id,
+                    to_number=phone,
+                    message=(
+                        f"✅ *Your revised order is ready — {total_text}*\n"
+                        f"Order: *{order.get('order_number') or 'Zilo order'}*\n\n"
+                        f"Pay securely here: {payment['checkout_url']}"
+                    ),
+                    customer_name=_text(order.get("customer_name"), 120) or "Customer",
+                    send_context="payment_link",
+                )
+            except Exception as exc:
+                logger.error("[storefront] revised payment link WhatsApp send failed: %s", exc)
+
+        return {**_order_payload(refreshed), **payment, "payment_link_revision": revision}

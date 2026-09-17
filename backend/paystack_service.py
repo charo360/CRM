@@ -243,6 +243,20 @@ async def process_charge_success(
         external_ref=(intent or {}).get("external_reference") or metadata.get("external_reference") or "",
     )
 
+    # A merchant may agree a different total in WhatsApp and issue a fresh
+    # link.  An older checkout page can still be open in the buyer's browser;
+    # never let that stale reference silently mark the revised order as paid.
+    # The payment is still retained in the ledger and surfaced to the merchant
+    # for reconciliation, but it is not attached to the wrong agreement.
+    if order:
+        expected_reference = str(order.get("payment_reference") or "").strip()
+        if expected_reference and expected_reference != reference:
+            logger.warning(
+                "[Paystack] stale payment reference for order=%s expected=%s got=%s",
+                order.get("_id"), expected_reference[-8:], reference[-8:],
+            )
+            order = None
+
     order_number = None
     if order:
         order_number = order.get("order_number") or ("ORD-" + str(order["_id"])[:6].upper())

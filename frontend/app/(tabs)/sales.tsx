@@ -159,6 +159,8 @@ export default function SalesScreen() {
   const [saleDetailsVisible, setSaleDetailsVisible] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [orderDetailsVisible, setOrderDetailsVisible] = useState(false);
+  const [agreedTotal, setAgreedTotal] = useState('');
+  const [sendingPaymentLink, setSendingPaymentLink] = useState(false);
 
   // Form state
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
@@ -563,6 +565,35 @@ export default function SalesScreen() {
     },
     [paymentMethods, fetchData]
   );
+
+  const sendRevisedPaymentLink = useCallback(async (order: Order) => {
+    const nextAmount = Number(agreedTotal.replace(/,/g, '').trim());
+    if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
+      Alert.alert('Enter agreed total', 'Enter the final amount you agreed with the customer.');
+      return;
+    }
+
+    setSendingPaymentLink(true);
+    try {
+      const response = await apiClient.post(`/storefront/orders/${order.id}/payment-link`, {
+        amount: nextAmount,
+      });
+      const updated = {
+        ...order,
+        total_amount: response.data.total_amount,
+        price: response.data.total_amount / Math.max(order.quantity || 1, 1),
+        payment_status: response.data.payment_status || 'Pending',
+      } as Order;
+      setOrders((current) => current.map((item) => item.id === order.id ? updated : item));
+      setSelectedOrder(updated);
+      setAgreedTotal(String(response.data.total_amount));
+      Alert.alert('Payment link sent', 'The customer received the revised secure payment link on WhatsApp.');
+    } catch (error: any) {
+      Alert.alert('Could not send link', error.response?.data?.detail || 'Please try again.');
+    } finally {
+      setSendingPaymentLink(false);
+    }
+  }, [agreedTotal]);
 
   // Initialize receipt message when editing starts
   const handleEditReceipt = () => {
@@ -986,6 +1017,7 @@ export default function SalesScreen() {
         style={styles.saleCard}
         onPress={() => {
           setSelectedOrder(order);
+          setAgreedTotal(String(order.total_amount));
           setOrderDetailsVisible(true);
         }}
       >
@@ -2065,6 +2097,36 @@ export default function SalesScreen() {
                   </Text>
                 </View>
 
+                {selectedOrder.payment_status !== 'Paid' && (
+                  <View style={styles.paymentLinkCard}>
+                    <Text style={styles.paymentLinkTitle}>Agree price and send payment link</Text>
+                    <Text style={styles.paymentLinkHint}>
+                      After you negotiate in WhatsApp, enter the final amount. Zilo sends a new secure Paystack link to this customer.
+                    </Text>
+                    <View style={styles.paymentLinkAmountRow}>
+                      <Text style={styles.paymentLinkCurrency}>{selectedOrder.currency || currency}</Text>
+                      <TextInput
+                        value={agreedTotal}
+                        onChangeText={setAgreedTotal}
+                        keyboardType="decimal-pad"
+                        placeholder="Agreed total"
+                        placeholderTextColor="#8391A8"
+                        style={styles.paymentLinkAmountInput}
+                      />
+                    </View>
+                    <TouchableOpacity
+                      disabled={sendingPaymentLink}
+                      style={[styles.paymentLinkButton, sendingPaymentLink && styles.paymentLinkButtonDisabled]}
+                      onPress={() => void sendRevisedPaymentLink(selectedOrder)}
+                    >
+                      {sendingPaymentLink ? <ActivityIndicator color="#fff" /> : <>
+                        <Ionicons name="logo-whatsapp" size={19} color="#fff" />
+                        <Text style={styles.paymentLinkButtonText}>Send secure payment link</Text>
+                      </>}
+                    </TouchableOpacity>
+                  </View>
+                )}
+
                 <View style={styles.detailsDivider} />
 
                 {/* Payment Status Update */}
@@ -2702,6 +2764,64 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
+  },
+  paymentLinkCard: {
+    backgroundColor: '#102A22',
+    borderColor: '#216E45',
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+  },
+  paymentLinkTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  paymentLinkHint: {
+    color: '#B7C8BF',
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 5,
+  },
+  paymentLinkAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1A2942',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2A3952',
+    marginTop: 12,
+    paddingHorizontal: 12,
+  },
+  paymentLinkCurrency: {
+    color: '#25D366',
+    fontWeight: '700',
+    marginRight: 10,
+  },
+  paymentLinkAmountInput: {
+    color: '#FFFFFF',
+    flex: 1,
+    fontSize: 16,
+    paddingVertical: 12,
+  },
+  paymentLinkButton: {
+    alignItems: 'center',
+    backgroundColor: '#25D366',
+    borderRadius: 10,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    marginTop: 10,
+    minHeight: 46,
+  },
+  paymentLinkButtonDisabled: {
+    opacity: 0.6,
+  },
+  paymentLinkButtonText: {
+    color: '#062214',
+    fontSize: 15,
+    fontWeight: '800',
   },
   orderItemsSection: {
     marginBottom: 16,
