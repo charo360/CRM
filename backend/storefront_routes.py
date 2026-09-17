@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 
-from paystack_credentials import paystack_connected
+from paystack_credentials import paystack_connected, resolve_secret_key
 from paystack_service import initialize_checkout_for_user as initialize_paystack_checkout
 
 
@@ -1224,11 +1224,14 @@ def register_storefront_routes(api_router: APIRouter, db, get_current_user: Call
 
         # Import here so the public catalog can still load in lightweight test
         # environments that intentionally stub payment providers.
-        from paystack_auth import secret_key_from_doc
         from paystack_client import PaystackApiError, PaystackClient
         from paystack_service import parse_webhook_event, process_charge_success
 
-        secret = secret_key_from_doc(business)
+        # Kenya merchants use Zilo's Paya platform account and intentionally
+        # have no private Paystack key stored on their user document.  Resolve
+        # the key through the payment mode so a buyer returning from checkout
+        # can still verify a successful payment if the webhook is delayed.
+        secret = resolve_secret_key(business)
         if not secret:
             raise HTTPException(503, "Online payments are not available for this business")
         try:
