@@ -1,6 +1,5 @@
 # ── IDE & editors ─────────────────────────────────────────────────────────────
 .idea/
-.vscode/
 .cursor/
 .windsurf/
 
@@ -25,8 +24,6 @@ venv/
 *.egg-info/
 
 # ── Environment / secrets ─────────────────────────────────────────────────────
-.env
-.env.*
 *.env
 **/token.json
 **/credentials.json
@@ -112,3 +109,4 @@ temp_interactive_push.bat
 # Android build artifacts (68MB+, rebuild instead of storing)
 *.aab
 *.apk
+config.bat
